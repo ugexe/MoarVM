@@ -98,7 +98,7 @@ typedef enum {
     MVM_JIT_REG_STABLE,
     MVM_JIT_REG_OBJBODY,
     MVM_JIT_DATA_LABEL,
-    MVM_JIT_PREVIOUS_RV,
+    MVM_JIT_SAVED_RV,
 } MVMJitArgType;
 
 struct MVMJitCallArg {
@@ -175,6 +175,7 @@ typedef enum {
     MVM_JIT_NODE_JUMPLIST,
     MVM_JIT_NODE_CONTROL,
     MVM_JIT_NODE_DATA,
+    MVM_JIT_NODE_SAVE_RV,
 } MVMJitNodeType;
 
 struct MVMJitNode {
