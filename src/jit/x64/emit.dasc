@@ -1923,6 +1923,19 @@ static void load_call_arg(MVMThreadContext *tc, MVMJitCompiler *compiler, MVMJit
     case MVM_JIT_SAVED_RV:
         | mov TMP6, qword [rbp-0x28];
         break;
+    case MVM_JIT_PARAM_I64:
+        | mov TMP6, TC->cur_frame;
+        | mov TMP6, aword FRAME:TMP6->params.args;
+        | mov TMP6, aword REGISTER:TMP6[arg.v.lit_i64];
+        break;
+    case MVM_JIT_PARAM_PTR:
+        | mov TMP6, TC->cur_frame;
+        | mov TMP6, aword FRAME:TMP6->params.args;
+        | mov TMP6, qword REGISTER:TMP6[arg.v.lit_i64];
+        | mov TMP6, aword STOOGE:TMP6->data;
+        break;
+    default:
+        MVM_oops(tc, "JIT: Unknown JIT argument type %d", arg.type);
     }
 }
 
@@ -2037,6 +2050,8 @@ static void emit_posix_callargs(MVMThreadContext *tc, MVMJitCompiler *compiler, 
         case MVM_JIT_LITERAL_PTR:
         case MVM_JIT_DATA_LABEL:
         case MVM_JIT_SAVED_RV:
+        case MVM_JIT_PARAM_I64:
+        case MVM_JIT_PARAM_PTR:
             if (num_gpr < 6) {
                 in_gpr[num_gpr++] = args[i];
             } else {
