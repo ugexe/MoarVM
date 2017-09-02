@@ -433,17 +433,19 @@ MVMJitCode *create_caller_code(MVMThreadContext *tc, MVMNativeCallBody *body) {
         MVMuint16 i = 0;
         call_node.u.call.args = MVM_malloc(body->num_args * sizeof(MVMJitCallArg));
         for (i = 0; i < body->num_args; i++) {
-            if (
-                body->arg_types[i] == MVM_NATIVECALL_ARG_CPOINTER
-            ) {
-                call_node.u.call.args[i].type = body->arg_types[i] == MVM_NATIVECALL_ARG_LONGLONG
-                    ? MVM_JIT_PARAM_I64
-                    : MVM_JIT_PARAM_PTR;
-                call_node.u.call.args[i].v.lit_i64 = i;
+            MVMJitArgType arg_type;
+            switch (body->arg_types[i]) {
+                case MVM_NATIVECALL_ARG_LONGLONG:
+                    arg_type = MVM_JIT_PARAM_I64;
+                    break;
+                case MVM_NATIVECALL_ARG_CPOINTER:
+                    arg_type = MVM_JIT_PARAM_PTR;
+                    break;
+                default:
+                    goto cleanup;
             }
-            else {
-                goto cleanup;
-            }
+            call_node.u.call.args[i].type = arg_type;
+            call_node.u.call.args[i].v.lit_i64 = i;
         }
     }
 
