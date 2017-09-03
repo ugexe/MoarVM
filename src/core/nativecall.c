@@ -372,66 +372,61 @@ static const char *dlerror(void)
 }
 #endif
 
-void init_c_call_node(MVMJitNode *node, void *func_ptr) {
+void init_c_call_node(MVMThreadContext *tc, MVMSpeshGraph *sg, MVMJitNode *node, void *func_ptr, MVMint16 num_args, MVMJitCallArg *args) {
     node->type = MVM_JIT_NODE_CALL_C;
     node->u.call.func_ptr = func_ptr;
-    node->u.call.args = NULL;
-    node->u.call.num_args = 0;
+    if (0 < num_args) {
+        node->u.call.args = MVM_spesh_alloc(tc, sg, num_args * sizeof(MVMJitCallArg));
+        memcpy(node->u.call.args, args, num_args * sizeof(MVMJitCallArg));
+    }
+    else {
+        node->u.call.args = NULL;
+    }
+    node->u.call.num_args = num_args;
     node->u.call.has_vargs = 0;
     node->u.call.rv_mode = MVM_JIT_RV_VOID;
     node->u.call.rv_idx = -1;
 }
 
-void init_box_call_node(MVMJitNode *box_rv_node, void *func_ptr) {
+void init_box_call_node(MVMThreadContext *tc, MVMSpeshGraph *sg, MVMJitNode *box_rv_node, void *func_ptr) {
     MVMJitCallArg args[] = { { MVM_JIT_INTERP_VAR , { MVM_JIT_INTERP_TC } },
                              { MVM_JIT_REG_DYNIDX, { 1 } },
                              { MVM_JIT_SAVED_RV, { 0 } }};
-    init_c_call_node(box_rv_node, func_ptr);
+    init_c_call_node(tc, sg, box_rv_node, func_ptr, 3, args);
     box_rv_node->next = NULL;
-    box_rv_node->u.call.args = MVM_calloc(3, sizeof(MVMJitCallArg));
-    memcpy(box_rv_node->u.call.args, args, 3 * sizeof(MVMJitCallArg));
-    box_rv_node->u.call.num_args = 3;
     box_rv_node->u.call.rv_mode = MVM_JIT_RV_DYNIDX;
     box_rv_node->u.call.rv_idx = 0;
 }
 
-MVMJitCode *create_caller_code(MVMThreadContext *tc, MVMNativeCallBody *body) {
-    MVMSpeshGraph sg;
-    MVMJitGraph jg = {&sg, NULL, NULL, 1, 0, NULL, 0, NULL, 0, NULL, 0, NULL};
-    MVMJitNode block_gc_node, unblock_gc_node, call_node, save_rv_node, box_rv_node;
-    MVMJitNode entry_label;
+MVMJitGraph *MVM_nativecall_jit_graph_for_caller_code(MVMThreadContext *tc, MVMSpeshGraph *sg, MVMNativeCallBody *body) {
+    MVMJitGraph *jg = MVM_spesh_alloc(tc, sg, sizeof(MVMJitGraph)); /* will actually calloc */
+    MVMJitNode *block_gc_node = MVM_spesh_alloc(tc, sg, sizeof(MVMJitNode));
+    MVMJitNode *unblock_gc_node = MVM_spesh_alloc(tc, sg, sizeof(MVMJitNode));
+    MVMJitNode *call_node = MVM_spesh_alloc(tc, sg, sizeof(MVMJitNode));
+    MVMJitNode *save_rv_node = MVM_spesh_alloc(tc, sg, sizeof(MVMJitNode));
+    MVMJitNode *box_rv_node = MVM_spesh_alloc(tc, sg, sizeof(MVMJitNode));
     MVMJitCode *jitcode = NULL;
     MVMJitCallArg block_gc_args[] = { { MVM_JIT_INTERP_VAR , { MVM_JIT_INTERP_TC } } };
 
-    box_rv_node.u.call.args = NULL;
+    jg->sg = sg;
+    jg->first_node = block_gc_node;
 
-    jg.sg = &sg; /* Only sg->sf is accessed and that's only for the bytecode dumper */
-    jg.first_node = &entry_label;
+    save_rv_node->type = MVM_JIT_NODE_SAVE_RV;
+    save_rv_node->next = unblock_gc_node;
 
-    entry_label.type = MVM_JIT_NODE_LABEL;
-    entry_label.u.label.name = 0;
-    entry_label.next = &block_gc_node;
+    init_c_call_node(tc, sg, block_gc_node,   &MVM_gc_mark_thread_blocked, 1, block_gc_args);
+    block_gc_node->next = call_node;
 
-    save_rv_node.type = MVM_JIT_NODE_SAVE_RV;
-    save_rv_node.next = &unblock_gc_node;
+    init_c_call_node(tc, sg, unblock_gc_node, &MVM_gc_mark_thread_unblocked, 1, block_gc_args);
 
-    init_c_call_node(&block_gc_node,   &MVM_gc_mark_thread_blocked);
-    block_gc_node.u.call.args = block_gc_args;
-    block_gc_node.u.call.num_args = 1;
-    block_gc_node.next = &call_node;
-
-    init_c_call_node(&unblock_gc_node, &MVM_gc_mark_thread_unblocked);
-    unblock_gc_node.u.call.args = block_gc_args;
-    unblock_gc_node.u.call.num_args = 1;
-
-    init_c_call_node(&call_node, body->entry_point);
-    call_node.next = &save_rv_node;
-    call_node.u.call.num_args = body->num_args;
-    jg.last_node = unblock_gc_node.next = &box_rv_node;
+    init_c_call_node(tc, sg, call_node, body->entry_point, 0, NULL); /* we handle args manually */
+    call_node->next = save_rv_node;
+    call_node->u.call.num_args = body->num_args;
+    jg->last_node = unblock_gc_node->next = box_rv_node;
 
     if (0 < body->num_args) {
         MVMuint16 i = 0;
-        call_node.u.call.args = MVM_malloc(body->num_args * sizeof(MVMJitCallArg));
+        call_node->u.call.args = MVM_spesh_alloc(tc, sg, body->num_args * sizeof(MVMJitCallArg));
         for (i = 0; i < body->num_args; i++) {
             MVMJitArgType arg_type;
             switch (body->arg_types[i]) {
@@ -442,10 +437,10 @@ MVMJitCode *create_caller_code(MVMThreadContext *tc, MVMNativeCallBody *body) {
                     arg_type = MVM_JIT_PARAM_PTR;
                     break;
                 default:
-                    goto cleanup;
+                    goto fail;
             }
-            call_node.u.call.args[i].type = arg_type;
-            call_node.u.call.args[i].v.lit_i64 = i;
+            call_node->u.call.args[i].type = arg_type;
+            call_node->u.call.args[i].v.lit_i64 = i;
         }
     }
 
@@ -456,46 +451,56 @@ MVMJitCode *create_caller_code(MVMThreadContext *tc, MVMNativeCallBody *body) {
         || body->ret_type == MVM_NATIVECALL_ARG_LONG
         || body->ret_type == MVM_NATIVECALL_ARG_LONGLONG
     ) {
-        call_node.next = &save_rv_node;
-        jg.last_node = unblock_gc_node.next = &box_rv_node;
+        call_node->next = save_rv_node;
+        jg->last_node = unblock_gc_node->next = box_rv_node;
 
-        init_box_call_node(&box_rv_node, &MVM_nativecall_make_int);
+        init_box_call_node(tc, sg, box_rv_node, &MVM_nativecall_make_int);
     }
     else if (body->ret_type == MVM_NATIVECALL_ARG_CPOINTER) {
-        init_box_call_node(&box_rv_node, &MVM_nativecall_make_cpointer);
+        init_box_call_node(tc, sg, box_rv_node, &MVM_nativecall_make_cpointer);
     }
     else if (body->ret_type == MVM_NATIVECALL_ARG_UTF8STR) {
         MVMJitCallArg args[] = { { MVM_JIT_INTERP_VAR , { MVM_JIT_INTERP_TC } },
                                  { MVM_JIT_REG_DYNIDX, { 1 } },
                                  { MVM_JIT_LITERAL, { MVM_NATIVECALL_ARG_UTF8STR } },
                                  { MVM_JIT_SAVED_RV, { 0 } }};
-        init_c_call_node(&box_rv_node, &MVM_nativecall_make_str);
-        box_rv_node.next = NULL;
-        box_rv_node.u.call.args = MVM_calloc(4, sizeof(MVMJitCallArg));
-        memcpy(box_rv_node.u.call.args, args, 4 * sizeof(MVMJitCallArg));
-        box_rv_node.u.call.num_args = 4;
-        box_rv_node.u.call.rv_mode = MVM_JIT_RV_DYNIDX;
-        box_rv_node.u.call.rv_idx = 0;
+        init_c_call_node(tc, sg, box_rv_node, &MVM_nativecall_make_str, 4, args);
+        box_rv_node->next = NULL;
+        box_rv_node->u.call.rv_mode = MVM_JIT_RV_DYNIDX;
+        box_rv_node->u.call.rv_idx = 0;
     }
     else if (body->ret_type == MVM_NATIVECALL_ARG_VOID) {
-        call_node.next = &unblock_gc_node;
-        unblock_gc_node.next = NULL;
-        jg.last_node = &unblock_gc_node;
+        call_node->next = unblock_gc_node;
+        unblock_gc_node->next = NULL;
+        jg->last_node = unblock_gc_node;
     }
     else {
-        goto cleanup;
+        goto fail;
     }
 
-    jg.num_labels = 1;
-    jitcode = MVM_jit_compile_graph(tc, &jg);
+    return jg;
+fail:
+    return NULL;
+}
 
-cleanup:
-    if (box_rv_node.u.call.args != NULL)
-        MVM_free(box_rv_node.u.call.args);
+MVMJitCode *create_caller_code(MVMThreadContext *tc, MVMNativeCallBody *body) {
+    MVMSpeshGraph *sg = MVM_calloc(1, sizeof(MVMSpeshGraph));
+    MVMJitGraph *jg = MVM_nativecall_jit_graph_for_caller_code(tc, sg, body);
+    MVMJitCode *jitcode;
+    if (jg != NULL) {
+        MVMJitNode *entry_label = MVM_spesh_alloc(tc, sg, sizeof(MVMJitNode));
+        entry_label->next = jg->first_node;
+        jg->first_node = entry_label;
+        jg->num_labels = 1;
 
-    if (call_node.u.call.args != NULL)
-        MVM_free(call_node.u.call.args);
-
+        entry_label->type = MVM_JIT_NODE_LABEL;
+        entry_label->u.label.name = 0;
+        jitcode = MVM_jit_compile_graph(tc, jg);
+    }
+    else {
+        jitcode = NULL;
+    }
+    MVM_spesh_graph_destroy(tc, sg);
     return jitcode;
 }
 
