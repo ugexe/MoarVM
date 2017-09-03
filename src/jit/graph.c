@@ -292,6 +292,7 @@ static void * op_to_func(MVMThreadContext *tc, MVMint16 opcode) {
     case MVM_OP_isnanorinf: return MVM_num_isnanorinf;
     case MVM_OP_nativecallcast: return MVM_nativecall_cast;
     case MVM_OP_nativecallinvoke: return MVM_nativecall_invoke;
+    case MVM_OP_nativecallinvokejit: return MVM_nativecall_invoke_jit;
     case MVM_OP_typeparameterized: return MVM_6model_parametric_type_parameterized;
     case MVM_OP_typeparameters: return MVM_6model_parametric_type_parameters;
     case MVM_OP_typeparameterat: return MVM_6model_parametric_type_parameter_at;
@@ -2787,6 +2788,28 @@ static MVMint32 consume_ins(MVMThreadContext *tc, MVMJitGraph *jg,
                                  { MVM_JIT_REG_VAL, { cargs } } };
         jg_append_call_c(tc, jg, op_to_func(tc, op), 4, args,
                           MVM_JIT_RV_PTR, dst);
+        break;
+    }
+    case MVM_OP_nativecallinvokejit: {
+        MVMint16 dst     = ins->operands[0].reg.orig;
+        MVMint16 restype = ins->operands[1].reg.orig;
+        MVMint16 site    = ins->operands[2].reg.orig;
+        MVMNativeCallBody *body;
+        MVMJitGraph *nc_jg;
+        MVMObject *nc_site;
+
+        MVMSpeshFacts *object_facts = MVM_spesh_get_facts(tc, iter->graph, ins->operands[2]);
+
+        if (!(object_facts->flags & MVM_SPESH_FACT_KNOWN_VALUE)) {
+            MVM_oops(tc, "Can't find nc_site value on spesh ins <%s> %d", ins->info->name, object_facts->flags);
+        }
+
+        body = MVM_nativecall_get_nc_body(tc, object_facts->value.o);
+        nc_jg = MVM_nativecall_jit_graph_for_caller_code(tc, iter->graph, body, restype, dst);
+
+        jg->last_node->next = nc_jg->first_node;
+        jg->last_node = nc_jg->last_node;
+
         break;
     }
     case MVM_OP_typeparameters:
