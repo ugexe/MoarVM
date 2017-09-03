@@ -439,6 +439,10 @@ MVMJitGraph *MVM_nativecall_jit_graph_for_caller_code(MVMThreadContext *tc, MVMS
         for (i = 0; i < body->num_args; i++) {
             MVMJitArgType arg_type;
             switch (body->arg_types[i]) {
+                case MVM_NATIVECALL_ARG_CHAR:
+                case MVM_NATIVECALL_ARG_SHORT:
+                case MVM_NATIVECALL_ARG_INT:
+                case MVM_NATIVECALL_ARG_LONG:
                 case MVM_NATIVECALL_ARG_LONGLONG:
                     arg_type = MVM_JIT_PARAM_I64;
                     break;
