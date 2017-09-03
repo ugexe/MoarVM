@@ -1012,15 +1012,9 @@ MVMThreadContext * MVM_nativecall_find_thread_context(MVMInstance *instance) {
     return tc;
 }
 
-MVMObject * MVM_nativecall_invoke_jit(MVMThreadContext *tc, MVMObject *res_type,
-        MVMObject *site) {
+void MVM_nativecall_invoke_jit(MVMThreadContext *tc, MVMObject *site) {
     MVMNativeCallBody *body = MVM_nativecall_get_nc_body(tc, site);
+    MVMJitCode * const jitcode = body->jitcode;
 
-    void *actual_label = tc->cur_frame->jit_entry_label;
-    tc->cur_frame->jit_entry_label = body->jitcode->labels[0];
-    MVMROOT(tc, res_type, {
-        MVM_jit_enter_code(tc, *tc->interp_cu, body->jitcode);
-    });
-    tc->cur_frame->jit_entry_label = actual_label;
-    return res_type;
+    jitcode->func_ptr(tc, *tc->interp_cu, jitcode->labels[0]);
 }
