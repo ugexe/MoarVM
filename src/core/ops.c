@@ -9329,9 +9329,57 @@ static const MVMOpInfo MVM_op_infos[] = {
         { MVM_operand_read_reg | MVM_operand_int64 }
     },
     {
-        MVM_OP_nativecallinvokejit,
-        "nativecallinvokejit",
-        "  ",
+        MVM_OP_ncinvoke_v,
+        "ncinvoke_v",
+        "-a",
+        2,
+        0,
+        0,
+        0,
+        0,
+        0,
+        { MVM_operand_read_reg | MVM_operand_obj, MVM_operand_read_reg | MVM_operand_obj }
+    },
+    {
+        MVM_OP_ncinvoke_i,
+        "ncinvoke_i",
+        "-a",
+        3,
+        0,
+        0,
+        0,
+        0,
+        0,
+        { MVM_operand_write_reg | MVM_operand_int64, MVM_operand_read_reg | MVM_operand_obj, MVM_operand_read_reg | MVM_operand_obj }
+    },
+    {
+        MVM_OP_ncinvoke_n,
+        "ncinvoke_n",
+        "-a",
+        3,
+        0,
+        0,
+        0,
+        0,
+        0,
+        { MVM_operand_write_reg | MVM_operand_num64, MVM_operand_read_reg | MVM_operand_obj, MVM_operand_read_reg | MVM_operand_obj }
+    },
+    {
+        MVM_OP_ncinvoke_s,
+        "ncinvoke_s",
+        "-a",
+        3,
+        0,
+        0,
+        0,
+        0,
+        0,
+        { MVM_operand_write_reg | MVM_operand_str, MVM_operand_read_reg | MVM_operand_obj, MVM_operand_read_reg | MVM_operand_obj }
+    },
+    {
+        MVM_OP_ncinvoke_o,
+        "ncinvoke_o",
+        "-a",
         3,
         0,
         0,
@@ -10167,7 +10215,7 @@ static const MVMOpInfo MVM_op_infos[] = {
     },
 };
 
-static const unsigned short MVM_op_counts = 848;
+static const unsigned short MVM_op_counts = 852;
 
 MVM_PUBLIC const MVMOpInfo * MVM_op_get_op(unsigned short op) {
     if (op >= MVM_op_counts)

@@ -4049,10 +4049,6 @@ void MVM_interp_run(MVMThreadContext *tc, void (*initial_invoke)(MVMThreadContex
                     GET_REG(cur_op, 4).o, GET_REG(cur_op, 6).o);
                 cur_op += 8;
                 goto NEXT;
-            OP(nativecallinvokejit):
-                MVM_nativecall_invoke_jit(tc, GET_REG(cur_op, 4).o);
-                cur_op += 6;
-                goto NEXT;
             OP(nativecallrefresh):
                 MVM_nativecall_refresh(tc, GET_REG(cur_op, 0).o);
                 cur_op += 2;
@@ -5253,6 +5249,36 @@ void MVM_interp_run(MVMThreadContext *tc, void (*initial_invoke)(MVMThreadContex
                 goto NEXT;
             OP(barrierfull):
                 MVM_barrier();
+                goto NEXT;
+            OP(ncinvoke_v):
+                tc->cur_frame->return_value = NULL;
+                tc->cur_frame->return_type = MVM_RETURN_VOID;
+                MVM_nativecall_invoke_jit(tc, GET_REG(cur_op, 2).o);
+                cur_op += 6;
+                goto NEXT;
+            OP(ncinvoke_i):
+                tc->cur_frame->return_value = &GET_REG(cur_op, 0);
+                tc->cur_frame->return_type = MVM_RETURN_INT;
+                MVM_nativecall_invoke_jit(tc, GET_REG(cur_op, 2).o);
+                cur_op += 6;
+                goto NEXT;
+            OP(ncinvoke_n):
+                tc->cur_frame->return_value = &GET_REG(cur_op, 0);
+                tc->cur_frame->return_type = MVM_RETURN_NUM;
+                MVM_nativecall_invoke_jit(tc, GET_REG(cur_op, 2).o);
+                cur_op += 6;
+                goto NEXT;
+            OP(ncinvoke_s):
+                tc->cur_frame->return_value = &GET_REG(cur_op, 0);
+                tc->cur_frame->return_type = MVM_RETURN_STR;
+                MVM_nativecall_invoke_jit(tc, GET_REG(cur_op, 2).o);
+                cur_op += 6;
+                goto NEXT;
+            OP(ncinvoke_o):
+                tc->cur_frame->return_value = &GET_REG(cur_op, 0);
+                tc->cur_frame->return_type = MVM_RETURN_OBJ;
+                MVM_nativecall_invoke_jit(tc, GET_REG(cur_op, 2).o);
+                cur_op += 6;
                 goto NEXT;
             OP(sp_guard): {
                 MVMObject *check = GET_REG(cur_op, 0).o;

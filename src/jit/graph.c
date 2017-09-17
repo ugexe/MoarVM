@@ -292,7 +292,6 @@ static void * op_to_func(MVMThreadContext *tc, MVMint16 opcode) {
     case MVM_OP_isnanorinf: return MVM_num_isnanorinf;
     case MVM_OP_nativecallcast: return MVM_nativecall_cast;
     case MVM_OP_nativecallinvoke: return MVM_nativecall_invoke;
-    case MVM_OP_nativecallinvokejit: return MVM_nativecall_invoke_jit;
     case MVM_OP_typeparameterized: return MVM_6model_parametric_type_parameterized;
     case MVM_OP_typeparameters: return MVM_6model_parametric_type_parameters;
     case MVM_OP_typeparameterat: return MVM_6model_parametric_type_parameter_at;
@@ -2790,6 +2789,7 @@ static MVMint32 consume_ins(MVMThreadContext *tc, MVMJitGraph *jg,
                           MVM_JIT_RV_PTR, dst);
         break;
     }
+    /*
     case MVM_OP_nativecallinvokejit: {
         MVMint16 dst     = ins->operands[0].reg.orig;
         MVMint16 restype = ins->operands[1].reg.orig;
@@ -2811,7 +2811,7 @@ static MVMint32 consume_ins(MVMThreadContext *tc, MVMJitGraph *jg,
         jg->last_node = nc_jg->last_node;
 
         break;
-    }
+    }*/
     case MVM_OP_typeparameters:
     case MVM_OP_typeparameterized: {
         MVMint16 dst = ins->operands[0].reg.orig;

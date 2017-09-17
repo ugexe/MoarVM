@@ -390,7 +390,7 @@ void init_c_call_node(MVMThreadContext *tc, MVMSpeshGraph *sg, MVMJitNode *node,
 
 void init_box_call_node(MVMThreadContext *tc, MVMSpeshGraph *sg, MVMJitNode *box_rv_node, void *func_ptr, MVMint16 restype, MVMint16 dst) {
     MVMJitCallArg args[] = { { MVM_JIT_INTERP_VAR , { MVM_JIT_INTERP_TC } },
-                             { MVM_JIT_REG_DYNIDX, { 1 } },
+                             { MVM_JIT_REG_DYNIDX, { 2 } },
                              { MVM_JIT_SAVED_RV, { 0 } }};
     init_c_call_node(tc, sg, box_rv_node, func_ptr, 3, args);
     box_rv_node->next = NULL;
@@ -474,7 +474,7 @@ MVMJitGraph *MVM_nativecall_jit_graph_for_caller_code(MVMThreadContext *tc, MVMS
     }
     else if (body->ret_type == MVM_NATIVECALL_ARG_UTF8STR) {
         MVMJitCallArg args[] = { { MVM_JIT_INTERP_VAR , { MVM_JIT_INTERP_TC } },
-                                 { MVM_JIT_REG_DYNIDX, { 1 } },
+                                 { MVM_JIT_REG_DYNIDX, { 2 } },
                                  { MVM_JIT_LITERAL, { MVM_NATIVECALL_ARG_UTF8STR } },
                                  { MVM_JIT_SAVED_RV, { 0 } }};
         init_c_call_node(tc, sg, box_rv_node, &MVM_nativecall_make_str, 4, args);
