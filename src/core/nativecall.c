@@ -444,10 +444,10 @@ MVMJitGraph *MVM_nativecall_jit_graph_for_caller_code(MVMThreadContext *tc, MVMS
                 case MVM_NATIVECALL_ARG_INT:
                 case MVM_NATIVECALL_ARG_LONG:
                 case MVM_NATIVECALL_ARG_LONGLONG:
-                    arg_type = MVM_JIT_PARAM_I64;
+                    arg_type = dst == -1 ? MVM_JIT_ARG_I64 : MVM_JIT_PARAM_I64;
                     break;
                 case MVM_NATIVECALL_ARG_CPOINTER:
-                    arg_type = MVM_JIT_PARAM_PTR;
+                    arg_type = dst == -1 ? MVM_JIT_ARG_PTR : MVM_JIT_PARAM_PTR;
                     break;
                 default:
                     goto fail;
