@@ -5551,9 +5551,10 @@ void MVM_interp_run(MVMThreadContext *tc, void (*initial_invoke)(MVMThreadContex
                     MVM_exception_throw_adhoc(tc, "Cannot write to a %s type object", MVM_6model_get_debug_name(tc, buf));
                 switch (size) {
                     case 4: {
+                        MVMuint64 value;
                         float_memory num32;
                         num32.f = (MVMnum32)GET_REG(cur_op, 4).n64;
-                        MVMuint64 value = num32.u;
+                        value = num32.u;
                         if ((flags & 3) == MVM_SWITCHENDIAN) {
                             value = switch_endian(value, size);
                         }
