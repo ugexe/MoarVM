@@ -434,3 +434,38 @@ int MVM_set_std_handle_to_nul(FILE *file, int fd, BOOL read, int std_handle_type
     return 1;
 }
 #endif
+
+char* MVM_process_path(MVMThreadContext *tc, MVMString *path) {
+    // Convert the MVMString to a C string first.
+    char *original_path = MVM_string_utf8_c8_encode_C_string(tc, path);
+
+#ifdef _WIN32
+    // Check if the path already starts with "\\?\"
+    if (strncmp(original_path, "\\\\?\\", 4) != 0) {
+        // Allocate memory for the new path. Add extra space for "\\?\" and the null terminator.
+        size_t new_length = strlen(original_path) + 4 + 1;
+        char *new_path = (char *)MVM_malloc(new_length);
+
+        // Copy "\\?\" prefix.
+        strcpy(new_path, "\\\\?\\");
+
+        // Copy the rest of the path, converting '/' to '\'.
+        char *new_path_ptr = new_path + 4;
+        char *original_path_ptr = original_path;
+        while (*original_path_ptr != '\0') {
+            *new_path_ptr++ = (*original_path_ptr == '/') ? '\\' : *original_path_ptr;
+            original_path_ptr++;
+        }
+
+        // Null terminate the new string.
+        *new_path_ptr = '\0';
+
+        // Free the original path string and use new path.
+        MVM_free(original_path);
+        original_path = new_path;
+    }
+#endif
+
+    // For both Windows and non-Windows, return the C string of the path (modified for Windows, original for others).
+    return original_path;
+}
