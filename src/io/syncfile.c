@@ -526,16 +526,47 @@ MVMObject * MVM_file_open_fh(MVMThreadContext *tc, MVMString *filename, MVMStrin
     }
 }
 
-/* Opens a file, returning a synchronous file handle. */
-MVMObject * MVM_file_handle_from_fd(MVMThreadContext *tc, int fd) {
+/* Wraps an existing file descriptor in an IO handle.
+ * The open mode (O_RDONLY/O_WRONLY/O_RDWR) is inferred from the OS so that
+ * introspection (e.g. lock pre-filtering) works correctly without requiring
+ * the caller to duplicate information the OS already tracks. */
+MVMObject * MVM_file_handle_from_fd(MVMThreadContext *tc, uv_file fd) {
     MVMOSHandle   * const result = (MVMOSHandle *)MVM_repr_alloc_init(tc, tc->instance->boot_types.BOOTIO);
     MVMIOFileData * const data   = MVM_calloc(1, sizeof(MVMIOFileData));
-    data->fd          = fd;
-    data->seekable    = MVM_platform_is_fd_seekable(fd);
+    data->fd       = fd;
+    data->seekable = MVM_platform_is_fd_seekable(fd);
+#ifdef _WIN32
+    {
+        HANDLE hf = (HANDLE)_get_osfhandle(fd);
+        FILE_ACCESS_INFORMATION ai;
+        if (hf != INVALID_HANDLE_VALUE
+                && GetFileInformationByHandleEx(hf, FileAccessInformation, &ai, sizeof(ai))) {
+            int can_read  = (ai.AccessFlags & FILE_READ_DATA)  != 0;
+            int can_write = (ai.AccessFlags & FILE_WRITE_DATA) != 0;
+            if      (can_read && can_write) data->open_mode = O_RDWR;
+            else if (can_write)             data->open_mode = O_WRONLY;
+            else                            data->open_mode = O_RDONLY;
+        }
+        else {
+            data->open_mode = O_RDWR; /* conservative fallback */
+        }
+        _setmode(fd, _O_BINARY);
+    }
+#else
+    {
+        int flags = fcntl(fd, F_GETFL);
+        if (flags != -1) {
+            /* O_ACCMODE masks the access bits from the full flags word,
+             * which also contains O_APPEND, O_NONBLOCK, etc. */
+            switch (flags & O_ACCMODE) {
+                case O_RDONLY: data->open_mode = O_RDONLY; break;
+                case O_WRONLY: data->open_mode = O_WRONLY; break;
+                default:       data->open_mode = O_RDWR;   break;
+            }
+        }
+    }
+#endif
     result->body.ops  = &op_table;
     result->body.data = data;
-#ifdef _WIN32
-    _setmode(fd, _O_BINARY);
-#endif
     return (MVMObject *)result;
 }

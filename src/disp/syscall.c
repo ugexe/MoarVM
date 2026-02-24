@@ -1275,6 +1275,26 @@ static MVMDispSysCall handle_open_mode = {
     .expected_concrete = { 1 },
 };
 
+/* open-handle-from-fd: wrap an existing file descriptor in an IO handle.
+ * The access mode is inferred from the OS (fcntl F_GETFL on Unix,
+ * GetFileInformationByHandleEx on Windows) so the caller does not need to
+ * supply it. */
+static void open_handle_from_fd_impl(MVMThreadContext *tc, MVMArgs arg_info) {
+    MVMint64 fd = get_int_arg(arg_info, 0);
+    MVM_args_set_result_obj(tc,
+        MVM_file_handle_from_fd(tc, (int)fd),
+        MVM_RETURN_CURRENT_FRAME);
+}
+static MVMDispSysCall open_handle_from_fd = {
+    .c_name = "open-handle-from-fd",
+    .implementation = open_handle_from_fd_impl,
+    .min_args = 1,
+    .max_args = 1,
+    .expected_kinds = { MVM_CALLSITE_ARG_INT },
+    .expected_reprs = { 0 },
+    .expected_concrete = { 1 },
+};
+
 /* file-stat */
 static void file_stat_impl(MVMThreadContext *tc, MVMArgs arg_info) {
     MVMString *filename = get_str_arg(arg_info, 0);
@@ -1738,6 +1758,7 @@ void MVM_disp_syscall_setup(MVMThreadContext *tc) {
     add_to_hash(tc, &async_unix_connect);
     add_to_hash(tc, &async_unix_listen);
     add_to_hash(tc, &handle_open_mode);
+    add_to_hash(tc, &open_handle_from_fd);
     add_to_hash(tc, &file_stat);
     add_to_hash(tc, &stat_flags);
     add_to_hash(tc, &stat_time);
