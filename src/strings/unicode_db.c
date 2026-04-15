@@ -115887,7 +115887,7 @@ static const MVMUnicodeNamedValue unicode_property_keypairs[4291] = {
     {"zwj",18},{"zwspace",15},{"zyyy",9},{"zzzz",9}
 };
 
-static const MVMUnicodeNamedValue unicode_property_value_keypairs[5072] = {
+static const MVMUnicodeNamedValue unicode_property_value_keypairs[5076] = {
     {"20-C",637534209},{"20-c",637534209},{"20-Other",637534209},{"20-other",637534209},{"20-L",1241513985},
     {"20-l",1241513985},{"20-Letter",1241513985},{"20-letter",1241513985},{"20-LC",1258291201},{"20-lc",1258291201},
     {"20-Cased_Letter",1258291201},{"20-cased_letter",1258291201},{"20-CasedLetter",1258291201},
@@ -115920,7 +115920,7 @@ static const MVMUnicodeNamedValue unicode_property_value_keypairs[5072] = {
     {"65-IDS_Binary_Operator",1090519041},{"66-IDS_Trinary_Operator",1107296257},{"67-IDS_Unary_Operator",1124073473},
     {"71-IDStart",1191182337},{"68-ID_Compat_Math_Continue",1140850689},{"69-ID_Compat_Math_Start",1157627905},
     {"70-ID_Continue",1174405121},{"71-ID_Start",1191182337},{"72-Ideographic",1207959553},{"73-JoinControl",1224736769},
-    {"73-Join_Control",1224736769},{"74-L",1241513985},{"75-LC",1258291201},{"74-Letter",1241513985},
+    {"73-Join_Control",1224736769},{"74-L",1241513985},{"75-LC",1258291201},{"75-CasedLetter",1258291201},{"75-Cased_Letter",1258291201},{"74-Letter",1241513985},
     {"76-LogicalOrderException",1275068417},{"76-Logical_Order_Exception",1275068417},{"77-Lowercase",1291845633},
     {"78-M",1308622849},{"84-MVMCOLLATIONPRIMARY",1409286145},{"79-MVMCOLLATIONQC",1325400065},
     {"85-MVMCOLLATIONSECONDARY",1426063361},{"89-MVMCOLLATIONTERTIARY",1493172225},{"84-MVM_COLLATION_PRIMARY",1409286145},
@@ -115968,7 +115968,7 @@ static const MVMUnicodeNamedValue unicode_property_value_keypairs[5072] = {
     {"70-idcontinue",1174405121},{"72-ideographic",1207959553},{"65-ids_binary_operator",1090519041},
     {"66-ids_trinary_operator",1107296257},{"67-ids_unary_operator",1124073473},{"65-idsbinaryoperator",1090519041},
     {"71-idstart",1191182337},{"66-idstrinaryoperator",1107296257},{"67-idsunaryoperator",1124073473},
-    {"73-join_control",1224736769},{"73-joincontrol",1224736769},{"74-l",1241513985},{"75-lc",1258291201},
+    {"73-join_control",1224736769},{"73-joincontrol",1224736769},{"74-l",1241513985},{"75-lc",1258291201},{"75-casedletter",1258291201},{"75-cased_letter",1258291201},
     {"74-letter",1241513985},{"76-logical_order_exception",1275068417},{"76-logicalorderexception",1275068417},
     {"77-lowercase",1291845633},{"78-m",1308622849},{"78-mark",1308622849},{"80-math",1342177281},
     {"81-modifier_combining_mark",1358954497},{"81-modifiercombiningmark",1358954497},

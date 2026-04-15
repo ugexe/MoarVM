@@ -3147,13 +3147,14 @@ sub emit_unicode_property_value_keypairs {
     my ($prop_codes) = @_;
 
     my %stuff = (
-        c => ['Other'],
-        l => ['Letter'],
-        m => ['Mark', 'Combining_Mark'],
-        n => ['Number'],
-        p => ['Punctuation', 'punct'],
-        s => ['Symbol'],
-        z => ['Separator']
+        c  => ['Other'],
+        l  => ['Letter'],
+        lc => ['Cased_Letter'],
+        m  => ['Mark', 'Combining_Mark'],
+        n  => ['Number'],
+        p  => ['Punctuation', 'punct'],
+        s  => ['Symbol'],
+        z  => ['Separator']
         );
 
     my %lines;

@@ -167,7 +167,7 @@ typedef struct MVMUnicodeNamedAlias MVMUnicodeNamedAlias;
 #define MVM_UNICODE_PVALUE_Numeric_Type_NONE 0
 #define MVM_UNICODE_PVALUE_Numeric_Type_NUMERIC 1
 
-#define num_unicode_property_value_keypairs 5072
+#define num_unicode_property_value_keypairs 5076
 
 typedef enum {
     MVM_UNICODE_PROPERTY_DECOMP_SPEC = 1,
