@@ -506,6 +506,23 @@ static void write_param_recipe_in_stream(MVMThreadContext *tc, MVMSerializationW
     write_param_recipe(tc, writer, parametric_type, parameters);
 }
 
+/* Writes an object reference without the parameterization-recipe
+ * detour. Used by code paths whose corresponding reader does not peek
+ * for PACKED_SC_PARAM_INTERN (notably collect_param_interns, which only
+ * skips ref payloads to compute offsets). Such sites need a plain
+ * (sc_id, idx) pair so the skip walk does not desync. */
+static void write_obj_ref_raw(MVMThreadContext *tc, MVMSerializationWriter *writer, MVMObject *ref) {
+    MVMint32 sc_id, idx;
+
+    if (OBJ_IS_NULL(MVM_sc_get_obj_sc(tc, ref))) {
+        MVM_sc_set_obj_sc(tc, ref, writer->root.sc);
+        MVM_sc_push_object(tc, writer->root.sc, ref);
+    }
+    sc_id = get_sc_id(tc, writer, MVM_sc_get_obj_sc(tc, ref));
+    idx   = (MVMint32)MVM_sc_find_object_idx(tc, MVM_sc_get_obj_sc(tc, ref), ref);
+    write_locate_sc_and_index(tc, writer, sc_id, idx);
+}
+
 /* Writes an object reference. */
 static void write_obj_ref(MVMThreadContext *tc, MVMSerializationWriter *writer, MVMObject *ref) {
     MVMint32 sc_id, idx;
@@ -1068,8 +1085,13 @@ static void add_param_intern(MVMThreadContext *tc, MVMSerializationWriter *write
     writer->cur_write_offset = &(writer->param_interns_data_offset);
     writer->cur_write_limit  = &(writer->param_interns_data_alloc);
 
-    /* Parametric type object reference. */
-    write_obj_ref(tc, writer, ptype);
+    /* Parametric type object reference. We use the raw (non-recipe)
+     * form here because collect_param_interns skips refs in this segment
+     * via read_locate_sc_and_index, which does not peek for the
+     * PACKED_SC_PARAM_INTERN sentinel. The same applies to each
+     * parameter ref below. The actual STable serialization elsewhere
+     * still uses the recipe form when appropriate. */
+    write_obj_ref_raw(tc, writer, ptype);
 
     /* Indexes in this SC of type object and STable. */
     expand_storage_if_needed(tc, writer, 12);
@@ -1090,13 +1112,14 @@ static void add_param_intern(MVMThreadContext *tc, MVMSerializationWriter *write
         MVM_sc_find_stable_idx(tc, writer->root.sc, STABLE(type)));
     *(writer->cur_write_offset) += 4;
 
-    /* Write parameter count and parameter object refs. */
+    /* Write parameter count and parameter object refs (raw form; see
+     * above). */
     num_params = MVM_repr_elems(tc, params);
     write_int32(*(writer->cur_write_buffer), *(writer->cur_write_offset),
         (MVMint32)num_params);
     *(writer->cur_write_offset) += 4;
     for (i = 0; i < num_params; i++)
-        write_obj_ref(tc, writer, MVM_repr_at_pos_o(tc, params, i));
+        write_obj_ref_raw(tc, writer, MVM_repr_at_pos_o(tc, params, i));
 
     /* Increment number of parameterization interns. */
     writer->root.num_param_interns++;
