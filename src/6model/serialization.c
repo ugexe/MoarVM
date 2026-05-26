@@ -1947,7 +1947,21 @@ typedef struct {
 } DeserParametricInvokeData;
 static void deser_parametric_invoke(MVMThreadContext *tc, void *invoke_data) {
     DeserParametricInvokeData *d = (DeserParametricInvokeData *)invoke_data;
+    /* MVM_6model_parametric_parameterize uses MVM_frame_dispatch_from_c,
+     * which overwrites the current frame's return_address with
+     * *tc->interp_cur_op. We are running inside MVM_interp_run_nested's
+     * initial_invoke, so tc->interp_cur_op points at the nested
+     * interp's local cur_op (still NULL because the first dispatch has
+     * not happened yet). Without this guard the outer frame's
+     * return_address - which MVM_interp_run_nested just carefully set
+     * to the outer cur_op value - would get clobbered to NULL, and the
+     * outer interp would crash on resume reading register indices from
+     * a NULL cur_op. Save/restore around the call to keep the outer
+     * frame's resume address intact. */
+    MVMFrame *outer_frame_for_restore = tc->cur_frame;
+    MVMuint8 *saved_return_address    = outer_frame_for_restore->return_address;
     MVM_6model_parametric_parameterize(tc, d->parametric_type, d->parameters, d->result);
+    outer_frame_for_restore->return_address = saved_return_address;
     /* If the parameterizer was actually dispatched (the lookup miss
      * case), exit the nested interp once that frame returns. If the
      * lookup hit shortcut was taken, no dispatch happened and cur_op
@@ -1965,7 +1979,6 @@ static MVMObject * deser_parameterize(MVMThreadContext *tc, MVMSerializationRead
                                       MVMObject *parametric_type, MVMObject *parameters) {
     MVMObject *result = MVM_6model_parametric_try_find_parameterization(tc,
             STABLE(parametric_type), parameters);
-    int hit_lookup = result != NULL;
     if (!result) {
         MVMRegister res = { NULL };
         DeserParametricInvokeData data;
@@ -1977,7 +1990,6 @@ static MVMObject * deser_parameterize(MVMThreadContext *tc, MVMSerializationRead
         }
         result = res.o;
     }
-    (void)hit_lookup; /* tracked for diagnostics */
     if (result) {
         if (MVM_sc_get_obj_sc(tc, result) == NULL)
             MVM_sc_set_obj_sc(tc, result, reader->root.sc);
