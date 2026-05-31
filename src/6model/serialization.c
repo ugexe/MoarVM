@@ -3282,6 +3282,57 @@ static void work_loop(MVMThreadContext *tc, MVMSerializationReader *sr) {
     }
 }
 
+/* Find the object repossession entry whose destination is the given
+ * slot. Returns -1 if no entry targets that slot. Linear scan over
+ * num_repos, which is small in practice. */
+static MVMint64 find_object_repos_for_slot(MVMSerializationReader *reader, MVMuint32 idx) {
+    MVMint32 i;
+    for (i = 0; i < reader->root.num_repos; i++) {
+        char *table_row = reader->root.repos_table + i * REPOS_TABLE_ENTRY_SIZE;
+        if (read_int32(table_row, 0) == 0
+                && (MVMuint32)read_int32(table_row, 4) == idx) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+/* Install the slot half of an object repossession. Locates orig in its
+ * source SC. Pushes a conflict backup onto repo_conflicts if orig was
+ * already re-homed elsewhere. Puts orig into the destination slot and
+ * updates its SC pointer and cached index. Shared by the main repossess
+ * loop and by the lazy demand path that runs ahead of it. */
+static MVMObject * install_object_repos(MVMThreadContext *tc, MVMSerializationReader *reader,
+                                        MVMObject *repo_conflicts, MVMint64 entry_idx) {
+    char *table_row = reader->root.repos_table + entry_idx * REPOS_TABLE_ENTRY_SIZE;
+    MVMuint32 slot = read_int32(table_row, 4);
+    MVMSerializationContext *orig_sc = locate_sc(tc, reader, read_int32(table_row, 8));
+    MVMObject *orig_obj = MVM_sc_get_object(tc, orig_sc, read_int32(table_row, 12));
+
+    if (MVM_sc_get_obj_sc(tc, orig_obj) != orig_sc) {
+        MVMROOT(tc, orig_obj) {
+            MVMObject *backup = NULL;
+            MVMROOT(tc, backup) {
+                if (IS_CONCRETE(orig_obj)) {
+                    backup = REPR(orig_obj)->allocate(tc, STABLE(orig_obj));
+                    REPR(orig_obj)->copy_to(tc, STABLE(orig_obj), OBJECT_BODY(orig_obj), backup, OBJECT_BODY(backup));
+                }
+                else
+                    backup = MVM_gc_allocate_type_object(tc, STABLE(orig_obj));
+            }
+
+            MVM_SC_WB_OBJ(tc, backup);
+            MVM_repr_push_o(tc, repo_conflicts, backup);
+            MVM_repr_push_o(tc, repo_conflicts, orig_obj);
+        }
+    }
+
+    MVM_sc_set_object(tc, reader->root.sc, slot, orig_obj);
+    MVM_sc_set_obj_sc(tc, orig_obj, reader->root.sc);
+    MVM_sc_set_idx_in_sc(&(orig_obj->header), slot);
+    return orig_obj;
+}
+
 /* Demands that we finish deserializing an object. */
 MVMObject * MVM_serialization_demand_object(MVMThreadContext *tc, MVMSerializationContext *sc, MVMint64 idx) {
     /* Obtain lock and check we didn't lose a race to deserialize this
@@ -3312,10 +3363,24 @@ MVMObject * MVM_serialization_demand_object(MVMThreadContext *tc, MVMSerializati
         }
     }
 
-    /* Flag that we're working on some deserialization (and so will run the
-     * loop). */
+    /* If the slot is the destination of a pending object repossession,
+     * install orig now instead of stubbing. The main repossess loop
+     * will see the slot already populated. It will skip the install
+     * half but still run the body clear, change_type, and worklist add. */
     MVM_incr(&sr->working);
     MVM_gc_allocate_gen2_default_set(tc);
+    MVMint64 repos_entry = find_object_repos_for_slot(sr, (MVMuint32)idx);
+    if (repos_entry >= 0) {
+        MVMROOT(tc, sc) {
+            install_object_repos(tc, sr, sr->repo_conflicts, repos_entry);
+            if (MVM_load(&sr->working) == 1)
+                work_loop(tc, sr);
+        }
+        MVM_gc_allocate_gen2_default_clear(tc);
+        MVM_decr(&sr->working);
+        MVM_reentrantmutex_unlock(tc, (MVMReentrantMutex *)sc->body->mutex);
+        return sc->body->root_objects[idx];
+    }
 
     /* Stub the object. */
     MVMROOT(tc, sc) {
@@ -3474,37 +3539,14 @@ static void repossess(MVMThreadContext *tc, MVMSerializationReader *reader, MVMi
         return;
     if (repo_type == 0) {
         MVMSTable *updated_st;
+        MVMObject *orig_obj;
 
-        /* Get object to repossess. */
-        MVMSerializationContext *orig_sc = locate_sc(tc, reader, read_int32(table_row, 8));
-        MVMObject *orig_obj = MVM_sc_get_object(tc, orig_sc, read_int32(table_row, 12));
-
-        /* If we have a reposession conflict, make a copy of the original object
-         * and reference it from the conflicts list. Push the original (about to
-         * be overwritten) object reference too. */
-        if (MVM_sc_get_obj_sc(tc, orig_obj) != orig_sc) {
-            MVMROOT(tc, orig_obj) {
-                MVMObject *backup = NULL;
-                MVMROOT(tc, backup) {
-                    if (IS_CONCRETE(orig_obj)) {
-                        backup = REPR(orig_obj)->allocate(tc, STABLE(orig_obj));
-                        REPR(orig_obj)->copy_to(tc, STABLE(orig_obj), OBJECT_BODY(orig_obj), backup, OBJECT_BODY(backup));
-                    }
-                    else
-                        backup = MVM_gc_allocate_type_object(tc, STABLE(orig_obj));
-                }
-
-                MVM_SC_WB_OBJ(tc, backup);
-                MVM_repr_push_o(tc, repo_conflicts, backup);
-                MVM_repr_push_o(tc, repo_conflicts, orig_obj);
-            }
-        }
-
-        /* Put it into objects root set at the apporpriate slot. */
+        /* The slot is either empty in the normal case (install orig
+         * here) or already holds orig from an earlier lazy demand. */
         slot = read_int32(table_row, 4);
-        MVM_sc_set_object(tc, reader->root.sc, slot, orig_obj);
-        MVM_sc_set_obj_sc(tc, orig_obj, reader->root.sc);
-        MVM_sc_set_idx_in_sc(&(orig_obj->header), slot);
+        orig_obj = reader->root.sc->body->root_objects[slot];
+        if (!orig_obj)
+            orig_obj = install_object_repos(tc, reader, repo_conflicts, i);
 
         /* Clear it up, since we'll re-allocate all the bits inside
          * it on deserialization. */
@@ -3641,6 +3683,7 @@ void MVM_serialization_deserialize(MVMThreadContext *tc, MVMSerializationContext
     /* Allocate and set up reader. */
     MVMSerializationReader *reader = MVM_calloc(1, sizeof(MVMSerializationReader));
     reader->root.sc          = sc;
+    reader->repo_conflicts   = repo_conflicts;
 
     /* If we've been given a NULL string heap, use that of the current
      * compilation unit. */

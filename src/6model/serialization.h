@@ -130,6 +130,11 @@ struct MVMSerializationReader {
      * object slot. NULL for non-recipe entries. */
     MVMSTable **obj_recipe_resolved;
 
+    /* Repossession conflicts list. Used by both the main repossess loop
+     * and the lazy demand path so conflict backups are recorded no
+     * matter which path installs an object slot. */
+    MVMObject *repo_conflicts;
+
     /* The data, which we may want to free when the SC goes away; a flag
      * indicates when it should be. */
     char      *data;
