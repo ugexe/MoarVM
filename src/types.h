@@ -160,6 +160,7 @@ typedef struct MVMSerializationContext MVMSerializationContext;
 typedef struct MVMSerializationContextBody MVMSerializationContextBody;
 typedef struct MVMSerializationReader MVMSerializationReader;
 typedef struct MVMDeserializeWorklist MVMDeserializeWorklist;
+typedef struct MVMDeferredParamRecipe MVMDeferredParamRecipe;
 typedef struct MVMSerializationRoot MVMSerializationRoot;
 typedef struct MVMSerializationWriter MVMSerializationWriter;
 typedef struct MVMSpeshGraph MVMSpeshGraph;

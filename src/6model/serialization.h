@@ -114,10 +114,35 @@ struct MVMSerializationReader {
     /* The current object we're deserializing. */
     MVMObject *current_object;
 
+    /* Queue of parameterization recipes whose resolution is deferred
+     * until after work_loop, processed by
+     * resolve_deferred_param_recipes. */
+    MVMDeferredParamRecipe *deferred_recipes;
+    MVMuint32 num_deferred_recipes;
+    MVMuint32 alloc_deferred_recipes;
+
+    /* When nonzero, deser_parameterize resolves eagerly even at sites
+     * that normally defer. Bumped by read_param_recipe around its
+     * inner reads. */
+    MVMint32 eager_recipe_depth;
+
+    /* Resolved STables for object-table recipe entries, indexed by
+     * object slot. NULL for non-recipe entries. */
+    MVMSTable **obj_recipe_resolved;
+
     /* The data, which we may want to free when the SC goes away; a flag
      * indicates when it should be. */
     char      *data;
     MVMuint32  data_needs_free;
+};
+
+/* One queued parameterization recipe waiting for resolution. Exactly
+ * one of placeholder_obj or placeholder_st is set. */
+struct MVMDeferredParamRecipe {
+    MVMObject *placeholder_obj;
+    MVMSTable *placeholder_st;
+    MVMObject *parametric_type;
+    MVMObject *parameters;
 };
 
 /* Represents the serialization writer and the various functions available

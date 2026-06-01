@@ -358,6 +358,12 @@ struct MVMSTable {
     /* If this STable represents a type that can be the target of a
      * change_type - that is to say, it's been mixed in to. */
     MVMuint8 is_mixin_type;
+
+    /* When set, this STable's REPR_data, type_check_cache,
+     * boolification_spec, container_data, and debug_name fields point
+     * at memory owned by another STable. STable cleanup must not free
+     * them. */
+    MVMuint8 extras_borrowed;
 };
 
 /* The representation operations table. Note that representations are not

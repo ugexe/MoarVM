@@ -106,6 +106,25 @@ static void SCRef_gc_mark(MVMThreadContext *tc, MVMSTable *st, void *data, MVMGC
         MVM_gc_worklist_add(tc, worklist, &(sc->sr->codes_list));
         MVM_gc_worklist_add(tc, worklist, &(sc->sr->current_object));
 
+        /* Deferred parameterization recipes hold GC objects that have
+         * to stay alive until the post-work_loop resolver drains the
+         * queue. The placeholder may be a type-object or a stable. */
+        for (i = 0; i < sc->sr->num_deferred_recipes; i++) {
+            MVM_gc_worklist_add(tc, worklist, &(sc->sr->deferred_recipes[i].placeholder_obj));
+            MVM_gc_worklist_add(tc, worklist, &(sc->sr->deferred_recipes[i].placeholder_st));
+            MVM_gc_worklist_add(tc, worklist, &(sc->sr->deferred_recipes[i].parametric_type));
+            MVM_gc_worklist_add(tc, worklist, &(sc->sr->deferred_recipes[i].parameters));
+        }
+
+        /* Pre-resolved object-table recipes are referenced through
+         * the obj_recipe_resolved cache until they end up backing the
+         * allocated objects during work_loop. */
+        if (sc->sr->obj_recipe_resolved) {
+            for (i = 0; i < (MVMuint64)sc->sr->root.num_objects; i++) {
+                if (sc->sr->obj_recipe_resolved[i])
+                    MVM_gc_worklist_add(tc, worklist, &(sc->sr->obj_recipe_resolved[i]));
+            }
+        }
     }
 }
 
@@ -138,6 +157,8 @@ static void gc_free(MVMThreadContext *tc, MVMObject *obj) {
         MVM_free(sc->body->sr->contexts);
         MVM_free(sc->body->sr->wl_objects.indexes);
         MVM_free(sc->body->sr->wl_stables.indexes);
+        MVM_free(sc->body->sr->deferred_recipes);
+        MVM_free(sc->body->sr->obj_recipe_resolved);
         MVM_free(sc->body->sr);
     }
 

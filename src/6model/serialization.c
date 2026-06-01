@@ -10,8 +10,8 @@
 
 /* Version of the serialization format that we are currently at and lowest
  * version we support. */
-#define CURRENT_VERSION 24
-#define MIN_VERSION     23
+#define CURRENT_VERSION 25
+#define MIN_VERSION     25
 
 /* Various sizes (in bytes). */
 #define HEADER_SIZE                 (4 * 18)
@@ -49,9 +49,14 @@
 /* For the packed format, for "small" values of si and idx */
 #define OBJECTS_TABLE_ENTRY_SC_MASK     0x7FF
 #define OBJECTS_TABLE_ENTRY_SC_IDX_MASK 0x000FFFFF
-#define OBJECTS_TABLE_ENTRY_SC_MAX      0x7FE
+#define OBJECTS_TABLE_ENTRY_SC_MAX      0x7FD
 #define OBJECTS_TABLE_ENTRY_SC_IDX_MAX  0x000FFFFF
 #define OBJECTS_TABLE_ENTRY_SC_SHIFT    20
+/* Sentinel sc field in the objects table meaning the entry's offset
+ * points at a 4-byte recipe length followed by a parameterization
+ * recipe (parametric type ref + parameters array), not a packed
+ * (sc_id, idx) pair. */
+#define OBJECTS_TABLE_ENTRY_SC_PARAM_INTERN 0x7FE
 #define OBJECTS_TABLE_ENTRY_SC_OVERFLOW 0x7FF
 #define OBJECTS_TABLE_ENTRY_IS_CONCRETE 0x80000000
 
@@ -69,9 +74,13 @@
    Hence that format is not quite as space efficient. */
 
 #define PACKED_SC_IDX_MASK  0x000FFFFF
-#define PACKED_SC_MAX       0xFFE
+#define PACKED_SC_MAX       0xFFD
 #define PACKED_SC_IDX_MAX   0x000FFFFF
 #define PACKED_SC_SHIFT     20
+/* Sentinel packed sc_id meaning the next bytes are a parameterization
+ * recipe (parametric type ref + parameters array), not an (sc_id, idx)
+ * pair. */
+#define PACKED_SC_PARAM_INTERN ((unsigned)0xFFE)
 #define PACKED_SC_OVERFLOW  ((unsigned)0xFFF)
 
 #define STRING_HEAP_LOC_MAX             0x7FFFFFFF
@@ -461,8 +470,43 @@ static void write_locate_sc_and_index(MVMThreadContext *tc, MVMSerializationWrit
     }
 }
 
-/* Writes an object reference. */
-static void write_obj_ref(MVMThreadContext *tc, MVMSerializationWriter *writer, MVMObject *ref) {
+/* Forward declarations so write_param_recipe can call them. */
+static void write_obj_ref(MVMThreadContext *tc, MVMSerializationWriter *writer,
+                          MVMObject *ref, int allow_recipe);
+static void write_array_var(MVMThreadContext *tc, MVMSerializationWriter *writer, MVMObject *arr);
+
+/* Writes a parameterization recipe body. The body is a reference to the
+ * parametric type followed by the parameters array. Inner refs may
+ * themselves take the recipe form if they target cross-SC parameterized
+ * types, which is what makes the format content-addressable. The
+ * wire-level sentinel that announces a recipe is the caller's job.
+ * write_param_recipe_in_stream prepends it for in-stream sites. The
+ * objects-table form writes a length prefix in place of the sentinel. */
+static void write_param_recipe(MVMThreadContext *tc, MVMSerializationWriter *writer,
+                               MVMObject *parametric_type, MVMObject *parameters) {
+    write_obj_ref(tc, writer, parametric_type, 1);
+    write_array_var(tc, writer, parameters);
+}
+
+/* Writes the PACKED_SC_PARAM_INTERN sentinel followed by the recipe
+ * body. Used at sites in the main serialization stream where a recipe
+ * replaces an (sc_id, idx) pair. The reader peeks the sentinel before
+ * decoding the rest. */
+static void write_param_recipe_in_stream(MVMThreadContext *tc, MVMSerializationWriter *writer,
+                                         MVMObject *parametric_type, MVMObject *parameters) {
+    MVMuint32 packed = PACKED_SC_PARAM_INTERN << PACKED_SC_SHIFT;
+    MVM_serialization_write_int(tc, writer, packed);
+    write_param_recipe(tc, writer, parametric_type, parameters);
+}
+
+/* Writes an object reference. allow_recipe controls whether the
+ * PACKED_SC_PARAM_INTERN form may be emitted for a cross-SC
+ * parameterized type. Callers whose corresponding reader walks refs
+ * with read_locate_sc_and_index (which does not peek for the sentinel)
+ * pass 0 so the wire form stays a plain packed (sc_id, idx) pair. The
+ * param_interns segment is the only such caller today. */
+static void write_obj_ref(MVMThreadContext *tc, MVMSerializationWriter *writer,
+                          MVMObject *ref, int allow_recipe) {
     MVMint32 sc_id, idx;
 
     if (OBJ_IS_NULL(MVM_sc_get_obj_sc(tc, ref))) {
@@ -471,6 +515,26 @@ static void write_obj_ref(MVMThreadContext *tc, MVMSerializationWriter *writer, 
         MVM_sc_set_obj_sc(tc, ref, writer->root.sc);
         MVM_sc_push_object(tc, writer->root.sc, ref);
     }
+
+    /* Recipe form for cross-SC non-concrete parameterized type objects.
+     * The reader resolves the recipe locally so the foreign SC stays out
+     * of the dependency table. */
+    if (allow_recipe) {
+        MVMSerializationContext *target_sc = MVM_sc_get_obj_sc(tc, ref);
+        MVMSTable *target_st = STABLE(ref);
+        if (target_sc != NULL
+                && target_sc != writer->root.sc
+                && !IS_CONCRETE(ref)
+                && (target_st->mode_flags & MVM_PARAMETERIZED_TYPE)
+                && target_st->paramet.erized.parametric_type
+                && target_st->paramet.erized.parameters) {
+            write_param_recipe_in_stream(tc, writer,
+                target_st->paramet.erized.parametric_type,
+                target_st->paramet.erized.parameters);
+            return;
+        }
+    }
+
     sc_id = get_sc_id(tc, writer, MVM_sc_get_obj_sc(tc, ref));
     idx   = (MVMint32)MVM_sc_find_object_idx(tc, MVM_sc_get_obj_sc(tc, ref), ref);
     write_locate_sc_and_index(tc, writer, sc_id, idx);
@@ -772,7 +836,7 @@ void MVM_serialization_write_ref(MVMThreadContext *tc, MVMSerializationWriter *w
     switch (discrim) {
         case REFVAR_NULL: break;
         case REFVAR_OBJECT:
-            write_obj_ref(tc, writer, ref);
+            write_obj_ref(tc, writer, ref, 1);
             break;
         case REFVAR_VM_NULL:
             /* Nothing to do for these. */
@@ -818,6 +882,21 @@ void MVM_serialization_write_ref(MVMThreadContext *tc, MVMSerializationWriter *w
 /* Writing function for references to STables. */
 void MVM_serialization_write_stable_ref(MVMThreadContext *tc, MVMSerializationWriter *writer, MVMSTable *st) {
     MVMuint32 sc_id, idx;
+
+    /* If the STable is a MVM_PARAMETERIZED_TYPE that lives in another SC,
+     * emit a recipe in place of the cross-SC pointer. See the
+     * PACKED_SC_PARAM_INTERN comment for the rationale. */
+    if ((st->mode_flags & MVM_PARAMETERIZED_TYPE)
+            && st->paramet.erized.parametric_type
+            && st->paramet.erized.parameters
+            && MVM_sc_get_stable_sc(tc, st) != NULL
+            && MVM_sc_get_stable_sc(tc, st) != writer->root.sc) {
+        write_param_recipe_in_stream(tc, writer,
+            st->paramet.erized.parametric_type,
+            st->paramet.erized.parameters);
+        return;
+    }
+
     get_stable_ref_info(tc, writer, st, &sc_id, &idx);
     write_locate_sc_and_index(tc, writer, sc_id, idx);
 }
@@ -963,7 +1042,7 @@ static MVMObject * concatenate_outputs(MVMThreadContext *tc, MVMSerializationWri
 /* Serializes the possibly-not-deserialized HOW. */
 static void serialize_how_lazy(MVMThreadContext *tc, MVMSerializationWriter *writer, MVMSTable *st) {
     if (st->HOW) {
-        write_obj_ref(tc, writer, st->HOW);
+        write_obj_ref(tc, writer, st->HOW, 1);
     }
     else {
         MVMint32 sc_id = get_sc_id(tc, writer, st->HOW_sc);
@@ -986,8 +1065,10 @@ static void add_param_intern(MVMThreadContext *tc, MVMSerializationWriter *write
     writer->cur_write_offset = &(writer->param_interns_data_offset);
     writer->cur_write_limit  = &(writer->param_interns_data_alloc);
 
-    /* Parametric type object reference. */
-    write_obj_ref(tc, writer, ptype);
+    /* Parametric type and parameter refs in the param_interns segment
+     * are emitted in plain (sc_id, idx) form. skip_param_intern_ref
+     * enforces this contract on the read side. */
+    write_obj_ref(tc, writer, ptype, 0);
 
     /* Indexes in this SC of type object and STable. */
     expand_storage_if_needed(tc, writer, 12);
@@ -1014,7 +1095,7 @@ static void add_param_intern(MVMThreadContext *tc, MVMSerializationWriter *write
         (MVMint32)num_params);
     *(writer->cur_write_offset) += 4;
     for (i = 0; i < num_params; i++)
-        write_obj_ref(tc, writer, MVM_repr_at_pos_o(tc, params, i));
+        write_obj_ref(tc, writer, MVM_repr_at_pos_o(tc, params, i), 0);
 
     /* Increment number of parameterization interns. */
     writer->root.num_param_interns++;
@@ -1052,7 +1133,7 @@ static void serialize_stable(MVMThreadContext *tc, MVMSerializationWriter *write
 
     /* Write HOW, WHAT and WHO. */
     serialize_how_lazy(tc, writer, st);
-    write_obj_ref(tc, writer, st->WHAT);
+    write_obj_ref(tc, writer, st->WHAT, 1);
     MVM_serialization_write_ref(tc, writer, st->WHO);
 
     /* Former method cache (removed). */
@@ -1174,12 +1255,26 @@ static void serialize_stable(MVMThreadContext *tc, MVMSerializationWriter *write
  * delegation to its representation. */
 static void serialize_object(MVMThreadContext *tc, MVMSerializationWriter *writer, MVMObject *obj) {
     MVMuint32 offset;
-
-    /* Get index of SC that holds the STable and its index. */
-    MVMuint32 sc;
-    MVMuint32 sc_idx;
     MVMuint32 packed;
-    get_stable_ref_info(tc, writer, STABLE(obj), &sc, &sc_idx);
+
+    /* Detect a cross-SC PARAMETERIZED STable to use the recipe form for
+     * the objects-table entry instead of recording (sc_id, idx). */
+    int use_recipe = 0;
+    MVMSTable *obj_st = STABLE(obj);
+    if ((obj_st->mode_flags & MVM_PARAMETERIZED_TYPE)
+            && obj_st->paramet.erized.parametric_type
+            && obj_st->paramet.erized.parameters
+            && MVM_sc_get_stable_sc(tc, obj_st) != NULL
+            && MVM_sc_get_stable_sc(tc, obj_st) != writer->root.sc) {
+        use_recipe = 1;
+    }
+
+    /* Get index of SC that holds the STable and its index (recipe form
+     * does not need them). */
+    MVMuint32 sc = 0;
+    MVMuint32 sc_idx = 0;
+    if (!use_recipe)
+        get_stable_ref_info(tc, writer, obj_st, &sc, &sc_idx);
 
     /* Ensure there's space in the objects table; grow if not. */
     offset = writer->root.num_objects * OBJECTS_TABLE_ENTRY_SIZE;
@@ -1197,8 +1292,28 @@ static void serialize_object(MVMThreadContext *tc, MVMSerializationWriter *write
 
     packed = IS_CONCRETE(obj) ? OBJECTS_TABLE_ENTRY_IS_CONCRETE : 0;
 
-    if (sc <= OBJECTS_TABLE_ENTRY_SC_MAX && sc_idx <= OBJECTS_TABLE_ENTRY_SC_IDX_MAX) {
+    /* The stored objects-data offset normally points at the start of the
+     * REPR data. The recipe form is the exception: it points to a
+     * 4-byte recipe length followed by the recipe bytes, with the REPR
+     * data starting after that. */
+    MVMuint32 stored_obj_data_offset;
+    if (use_recipe) {
+        packed |= OBJECTS_TABLE_ENTRY_SC_PARAM_INTERN << OBJECTS_TABLE_ENTRY_SC_SHIFT;
+        stored_obj_data_offset = *(writer->cur_write_offset);
+        expand_storage_if_needed(tc, writer, 4);
+        MVMuint32 length_slot_offset = stored_obj_data_offset;
+        *(writer->cur_write_offset) += 4;
+        MVMuint32 recipe_start_offset = *(writer->cur_write_offset);
+        write_param_recipe(tc, writer,
+            obj_st->paramet.erized.parametric_type,
+            obj_st->paramet.erized.parameters);
+        MVMuint32 recipe_end_offset = *(writer->cur_write_offset);
+        write_int32(*(writer->cur_write_buffer), length_slot_offset,
+            (MVMint32)(recipe_end_offset - recipe_start_offset));
+    }
+    else if (sc <= OBJECTS_TABLE_ENTRY_SC_MAX && sc_idx <= OBJECTS_TABLE_ENTRY_SC_IDX_MAX) {
         packed |= (sc << OBJECTS_TABLE_ENTRY_SC_SHIFT) | sc_idx;
+        stored_obj_data_offset = *(writer->cur_write_offset);
     } else {
         packed |= OBJECTS_TABLE_ENTRY_SC_OVERFLOW << OBJECTS_TABLE_ENTRY_SC_SHIFT;
 
@@ -1207,11 +1322,12 @@ static void serialize_object(MVMThreadContext *tc, MVMSerializationWriter *write
         *(writer->cur_write_offset) += 4;
         write_int32(*(writer->cur_write_buffer), *(writer->cur_write_offset), sc_idx);
         *(writer->cur_write_offset) += 4;
+        stored_obj_data_offset = *(writer->cur_write_offset);
     }
 
     /* Make objects table entry. */
     write_int32(writer->root.objects_table, offset + 0, packed);
-    write_int32(writer->root.objects_table, offset + 4, writer->objects_data_offset);
+    write_int32(writer->root.objects_table, offset + 4, stored_obj_data_offset);
 
     /* Delegate to its serialization REPR function. */
     if (IS_CONCRETE(obj)) {
@@ -1793,8 +1909,360 @@ MVM_STATIC_INLINE MVMSerializationContext * read_locate_sc_and_index(MVMThreadCo
     return locate_sc(tc, reader, sc_id);
 }
 
+/* Forward declarations for the recipe reader helpers. */
+static MVMObject * read_array_var(MVMThreadContext *tc, MVMSerializationReader *reader);
+static MVMObject * read_obj_ref(MVMThreadContext *tc, MVMSerializationReader *reader);
+
+/* Trampoline data for invoking the parameterizer through a nested
+ * interpreter when deserialization needs to resolve a parameterization
+ * synchronously. */
+typedef struct {
+    MVMObject   *parametric_type;
+    MVMObject   *parameters;
+    MVMRegister *result;
+} DeserParametricInvokeData;
+static void deser_parametric_invoke(MVMThreadContext *tc, void *invoke_data) {
+    DeserParametricInvokeData *d = (DeserParametricInvokeData *)invoke_data;
+    /* Save the outer frame's return_address across the parameterize
+     * call. MVM_6model_parametric_parameterize uses
+     * MVM_frame_dispatch_from_c, which overwrites the current frame's
+     * return_address with *tc->interp_cur_op. We are running inside
+     * MVM_interp_run_nested's initial_invoke, so tc->interp_cur_op
+     * points at the nested interp's local cur_op, which is still NULL
+     * because no dispatch has happened yet. Without this guard the
+     * outer frame's resume address (just set by MVM_interp_run_nested)
+     * gets clobbered to NULL, and the outer interp crashes on resume
+     * reading register indices from a NULL cur_op. */
+    MVMFrame *outer_frame      = tc->cur_frame;
+    MVMuint8 *saved_return_pc  = outer_frame->return_address;
+    MVM_6model_parametric_parameterize(tc, d->parametric_type, d->parameters, d->result);
+    outer_frame->return_address = saved_return_pc;
+    /* Drive the nested interp to exit once this frame returns. The
+     * lookup hit shortcut leaves cur_op NULL so MVM_interp_run exits
+     * at the top of its loop. The lookup miss path runs the
+     * parameterizer through a real dispatch and exits when the
+     * dispatched frame returns. The thread_entry_frame assignment is
+     * the standard nested-interp exit pattern. See nativecall.c for
+     * the same idiom. */
+    tc->thread_entry_frame = tc->cur_frame;
+}
+
+/* Runs the parameterizer for one (parametric_type, parameters) pair
+ * and returns the resulting type-object. Used by both the eager and
+ * deferred resolution paths. */
+static MVMObject * run_parameterizer(MVMThreadContext *tc,
+                                     MVMObject *parametric_type, MVMObject *parameters) {
+    MVMRegister res = { NULL };
+    DeserParametricInvokeData data;
+    data.parametric_type = parametric_type;
+    data.parameters      = parameters;
+    data.result          = &res;
+    MVMROOT2(tc, parametric_type, parameters) {
+        MVM_interp_run_nested(tc, deser_parametric_invoke, &data, &res);
+    }
+    return res.o;
+}
+
+/* Tag a freshly resolved parameterization and its STable with the
+ * reader's SC so downstream sc.h lookups see a non-NULL SC pointer.
+ * The lookup table for a parametric type can hold parameterizations
+ * created by an earlier compunit. Those keep their existing SC. */
+static void tag_resolved_param_sc(MVMThreadContext *tc, MVMSerializationReader *reader,
+                                  MVMObject *result) {
+    if (MVM_sc_get_obj_sc(tc, result) == NULL)
+        MVM_sc_set_obj_sc(tc, result, reader->root.sc);
+    MVMSTable *result_st = STABLE(result);
+    if (MVM_sc_get_stable_sc(tc, result_st) == NULL)
+        MVM_sc_set_stable_sc(tc, result_st, reader->root.sc);
+}
+
+/* Allocates a placeholder type-object that stands in for a deferred
+ * parameterization during body deserialization. The placeholder is
+ * backed by the parametric type's STable so any incidental use during
+ * work_loop sees a coherent type. After work_loop ends,
+ * resolve_deferred_param_recipes rebinds placeholder->st to the
+ * resolved parameterization's STable. */
+static MVMObject * make_param_placeholder(MVMThreadContext *tc, MVMSerializationReader *reader,
+                                          MVMObject *parametric_type) {
+    MVMObject *placeholder = NULL;
+    MVMROOT(tc, parametric_type) {
+        placeholder = MVM_gc_allocate_type_object(tc, STABLE(parametric_type));
+    }
+    MVM_sc_set_obj_sc(tc, placeholder, reader->root.sc);
+    return placeholder;
+}
+
+/* Grows the deferred queue and returns a pointer to a freshly zeroed
+ * record. The caller fills in whichever placeholder fields apply. */
+static MVMDeferredParamRecipe * push_deferred_recipe_slot(MVMSerializationReader *reader) {
+    if (reader->num_deferred_recipes == reader->alloc_deferred_recipes) {
+        reader->alloc_deferred_recipes = reader->alloc_deferred_recipes
+            ? reader->alloc_deferred_recipes * 2 : 16;
+        reader->deferred_recipes = MVM_realloc(reader->deferred_recipes,
+            reader->alloc_deferred_recipes * sizeof(MVMDeferredParamRecipe));
+    }
+    MVMDeferredParamRecipe *rec = &(reader->deferred_recipes[reader->num_deferred_recipes++]);
+    rec->placeholder_obj = NULL;
+    rec->placeholder_st  = NULL;
+    rec->parametric_type = NULL;
+    rec->parameters      = NULL;
+    return rec;
+}
+
+/* Queues a deferred type-object recipe. Returns the placeholder
+ * type-object so the caller can return it to its own caller. */
+static MVMObject * queue_deferred_param_recipe(MVMThreadContext *tc, MVMSerializationReader *reader,
+                                               MVMObject *parametric_type, MVMObject *parameters) {
+    MVMObject *placeholder = NULL;
+    MVMROOT2(tc, parametric_type, parameters) {
+        placeholder = make_param_placeholder(tc, reader, parametric_type);
+    }
+    MVMDeferredParamRecipe *rec = push_deferred_recipe_slot(reader);
+    rec->placeholder_obj  = placeholder;
+    rec->parametric_type  = parametric_type;
+    rec->parameters       = parameters;
+    return placeholder;
+}
+
+/* Allocates a placeholder STable backed by the parametric type's REPR
+ * and HOW. REPR_data and other heap extras stay NULL until
+ * patch_placeholder_stable runs. The placeholder gets its own WHAT
+ * type-object so that anyone who follows WHAT during body deser sees
+ * a coherent type-object. mode_flags is set to PARAMETERIZED with the
+ * parent's PARAMETRIC bit cleared, since the paramet union is read
+ * based on which of those two bits is set. */
+static MVMSTable * make_param_placeholder_stable(MVMThreadContext *tc,
+                                                 MVMSerializationReader *reader,
+                                                 MVMObject *parametric_type) {
+    MVMSTable *placeholder = NULL;
+    MVMROOT(tc, parametric_type) {
+        MVMSTable *parent = STABLE(parametric_type);
+        placeholder = MVM_gc_allocate_stable(tc, parent->REPR, parent->HOW);
+        placeholder->size       = parent->size;
+        placeholder->mode_flags = (parent->mode_flags & ~MVM_PARAMETRIC_TYPE)
+                                  | MVM_PARAMETERIZED_TYPE;
+        placeholder->paramet.erized.parametric_type = parametric_type;
+        MVM_sc_set_stable_sc(tc, placeholder, reader->root.sc);
+        MVMROOT(tc, placeholder) {
+            MVMObject *what = MVM_gc_allocate_type_object(tc, placeholder);
+            MVM_ASSIGN_REF(tc, &(placeholder->header), placeholder->WHAT, what);
+            MVM_sc_set_obj_sc(tc, what, reader->root.sc);
+        }
+    }
+    return placeholder;
+}
+
+/* Queues a deferred STable recipe. Returns the placeholder STable so
+ * the caller can return it directly. */
+static MVMSTable * queue_deferred_param_recipe_stable(MVMThreadContext *tc, MVMSerializationReader *reader,
+                                                      MVMObject *parametric_type, MVMObject *parameters) {
+    MVMSTable *placeholder = NULL;
+    MVMROOT2(tc, parametric_type, parameters) {
+        placeholder = make_param_placeholder_stable(tc, reader, parametric_type);
+        MVM_ASSIGN_REF(tc, &(placeholder->header),
+            placeholder->paramet.erized.parameters, parameters);
+    }
+    MVMDeferredParamRecipe *rec = push_deferred_recipe_slot(reader);
+    rec->placeholder_st  = placeholder;
+    rec->parametric_type = parametric_type;
+    rec->parameters      = parameters;
+    return placeholder;
+}
+
+/* Makes placeholder behave as resolved by copying REPR, layout, mode
+ * flags, paramet union, and metadata. Heap pointers (REPR_data and
+ * the extras) are shared with resolved and flagged via extras_borrowed
+ * to prevent double-free. WHAT is rebound to resolved->WHAT so the
+ * canonical type-object identity is preserved. SC ownership is left
+ * alone so the placeholder stays pinned by sc->root_stables. */
+static void patch_placeholder_stable(MVMThreadContext *tc, MVMSTable *placeholder,
+                                     MVMSTable *resolved) {
+    placeholder->REPR                    = resolved->REPR;
+    placeholder->REPR_data               = resolved->REPR_data;
+    placeholder->size                    = resolved->size;
+    placeholder->type_check_cache_length = resolved->type_check_cache_length;
+    placeholder->mode_flags              = resolved->mode_flags;
+    placeholder->type_check_cache        = resolved->type_check_cache;
+    placeholder->container_spec          = resolved->container_spec;
+    placeholder->container_data          = resolved->container_data;
+    placeholder->boolification_spec      = resolved->boolification_spec;
+    placeholder->hll_owner               = resolved->hll_owner;
+    placeholder->hll_role                = resolved->hll_role;
+    placeholder->debug_name              = resolved->debug_name;
+    placeholder->paramet                 = resolved->paramet;
+    MVM_ASSIGN_REF(tc, &(placeholder->header), placeholder->HOW, resolved->HOW);
+    MVM_ASSIGN_REF(tc, &(placeholder->header), placeholder->WHAT, resolved->WHAT);
+    if (resolved->WHO)
+        MVM_ASSIGN_REF(tc, &(placeholder->header), placeholder->WHO, resolved->WHO);
+    placeholder->extras_borrowed = 1;
+}
+
+/* Resolve a parameterization, returning the type-object. Hits the
+ * parametric lookup table on the fast path. On a miss, either queues
+ * a deferred record and returns a placeholder (when allow_defer is
+ * set) or runs the parameterizer in place. */
+static MVMObject * deser_parameterize(MVMThreadContext *tc, MVMSerializationReader *reader,
+                                      MVMObject *parametric_type, MVMObject *parameters,
+                                      int allow_defer) {
+    MVMObject *result = MVM_6model_parametric_try_find_parameterization(tc,
+            STABLE(parametric_type), parameters);
+    if (result) {
+        tag_resolved_param_sc(tc, reader, result);
+        return result;
+    }
+    if (allow_defer)
+        return queue_deferred_param_recipe(tc, reader, parametric_type, parameters);
+    result = run_parameterizer(tc, parametric_type, parameters);
+    if (result)
+        tag_resolved_param_sc(tc, reader, result);
+    return result;
+}
+
+/* Like deser_parameterize but returns the STable directly. The
+ * deferred path returns a placeholder STable to be patched in place. */
+static MVMSTable * deser_parameterize_stable(MVMThreadContext *tc, MVMSerializationReader *reader,
+                                             MVMObject *parametric_type, MVMObject *parameters,
+                                             int allow_defer) {
+    MVMObject *result = MVM_6model_parametric_try_find_parameterization(tc,
+            STABLE(parametric_type), parameters);
+    if (result) {
+        tag_resolved_param_sc(tc, reader, result);
+        return STABLE(result);
+    }
+    if (allow_defer)
+        return queue_deferred_param_recipe_stable(tc, reader, parametric_type, parameters);
+    result = run_parameterizer(tc, parametric_type, parameters);
+    if (result) {
+        tag_resolved_param_sc(tc, reader, result);
+        return STABLE(result);
+    }
+    return NULL;
+}
+
+/* Reads a parameterization recipe body (parametric type ref +
+ * parameters array) and resolves it to a type-object via
+ * deser_parameterize. The eager_recipe_depth bump forces the inner
+ * reads to resolve any nested recipes eagerly because the
+ * parameterizer keys its lookup table by the parametric STable and
+ * uses the parameter array as a cache key. */
+static MVMObject * read_param_recipe(MVMThreadContext *tc, MVMSerializationReader *reader,
+                                     int allow_defer) {
+    reader->eager_recipe_depth++;
+    MVMObject *parametric = read_obj_ref(tc, reader);
+    /* Make sure the parametric type's STable is fully deserialized
+     * before we touch its lookup table and parameterizer slot. */
+    MVM_serialization_force_stable(tc, reader, STABLE(parametric));
+    MVMObject *parameters = NULL;
+    MVMObject *result     = NULL;
+    MVMROOT(tc, parametric) {
+        parameters = read_array_var(tc, reader);
+        MVMROOT(tc, parameters) {
+            reader->eager_recipe_depth--;
+            result = deser_parameterize(tc, reader, parametric, parameters, allow_defer);
+        }
+    }
+    return result;
+}
+
+/* Drains the deferred-recipe queue. For each entry, looks up the
+ * parameterization (or runs the parameterizer on a miss), then
+ * rebinds placeholder_obj->st to the resolved STable or patches
+ * placeholder_st in place via patch_placeholder_stable. */
+static void resolve_deferred_param_recipes(MVMThreadContext *tc, MVMSerializationReader *reader) {
+    MVMuint32 i;
+    for (i = 0; i < reader->num_deferred_recipes; i++) {
+        /* Snapshot the record fields. run_parameterizer can recursively
+         * queue more deferrals, and a queue grow would invalidate a
+         * cached &deferred_recipes[i] pointer. */
+        MVMObject *parametric  = reader->deferred_recipes[i].parametric_type;
+        MVMObject *parameters  = reader->deferred_recipes[i].parameters;
+        MVMObject *placeholder_obj = reader->deferred_recipes[i].placeholder_obj;
+        MVMSTable *placeholder_st  = reader->deferred_recipes[i].placeholder_st;
+
+        MVMObject *resolved = MVM_6model_parametric_try_find_parameterization(tc,
+                STABLE(parametric), parameters);
+        if (!resolved)
+            resolved = run_parameterizer(tc, parametric, parameters);
+        if (!resolved)
+            continue;
+        tag_resolved_param_sc(tc, reader, resolved);
+        MVMSTable *resolved_st = STABLE(resolved);
+        if (placeholder_obj) {
+            MVM_ASSIGN_REF(tc, &(placeholder_obj->header),
+                placeholder_obj->st, resolved_st);
+        }
+        if (placeholder_st) {
+            patch_placeholder_stable(tc, placeholder_st, resolved_st);
+        }
+    }
+    reader->num_deferred_recipes = 0;
+    if (reader->deferred_recipes) {
+        MVM_free(reader->deferred_recipes);
+        reader->deferred_recipes = NULL;
+        reader->alloc_deferred_recipes = 0;
+    }
+}
+
+/* Resolves every object-table recipe entry into obj_recipe_resolved.
+ * Read by read_object_table_entry. */
+static void pre_resolve_object_table_recipes(MVMThreadContext *tc, MVMSerializationReader *reader) {
+    MVMint32 num = reader->root.num_objects;
+    if (num <= 0)
+        return;
+
+    MVMint32 i;
+    int any = 0;
+    for (i = 0; i < num; i++) {
+        const char *row = reader->root.objects_table + i * OBJECTS_TABLE_ENTRY_SIZE;
+        MVMuint32 packed = read_int32(row, 0);
+        MVMuint32 si = (packed >> OBJECTS_TABLE_ENTRY_SC_SHIFT) & OBJECTS_TABLE_ENTRY_SC_MASK;
+        if (si == OBJECTS_TABLE_ENTRY_SC_PARAM_INTERN) {
+            any = 1;
+            break;
+        }
+    }
+    if (!any)
+        return;
+
+    reader->obj_recipe_resolved = MVM_calloc(num, sizeof(MVMSTable *));
+
+    char    **save_buf = reader->cur_read_buffer;
+    MVMint32 *save_off = reader->cur_read_offset;
+    char    **save_end = reader->cur_read_end;
+
+    for (i = 0; i < num; i++) {
+        const char *row = reader->root.objects_table + i * OBJECTS_TABLE_ENTRY_SIZE;
+        MVMuint32 packed = read_int32(row, 0);
+        MVMuint32 si = (packed >> OBJECTS_TABLE_ENTRY_SC_SHIFT) & OBJECTS_TABLE_ENTRY_SC_MASK;
+        if (si != OBJECTS_TABLE_ENTRY_SC_PARAM_INTERN)
+            continue;
+
+        MVMint32 recipe_start = read_int32(row, 4);
+        MVMint32 local_offset = recipe_start + 4;
+        reader->cur_read_buffer = &(reader->root.objects_data);
+        reader->cur_read_offset = &local_offset;
+        reader->cur_read_end    = &(reader->objects_data_end);
+
+        MVMObject *param_obj = read_param_recipe(tc, reader, 0);
+        reader->obj_recipe_resolved[i] = STABLE(param_obj);
+    }
+
+    reader->cur_read_buffer = save_buf;
+    reader->cur_read_offset = save_off;
+    reader->cur_read_end    = save_end;
+}
+
 /* Reads in and resolves an object references. */
 static MVMObject * read_obj_ref(MVMThreadContext *tc, MVMSerializationReader *reader) {
+    /* Peek for the recipe sentinel before the normal decode. */
+    MVMint32 saved_offset = *(reader->cur_read_offset);
+    MVMuint32 packed = (MVMuint32)MVM_serialization_read_int(tc, reader);
+    MVMuint32 sc_id  = packed >> PACKED_SC_SHIFT;
+    if (sc_id == PACKED_SC_PARAM_INTERN) {
+        return read_param_recipe(tc, reader, reader->eager_recipe_depth == 0);
+    }
+    *(reader->cur_read_offset) = saved_offset;
+
     MVMint32 idx;
     MVMSerializationContext *sc = read_locate_sc_and_index(tc, reader, &idx);
     /* sequence point... */
@@ -1975,6 +2443,28 @@ MVMObject * MVM_serialization_read_ref(MVMThreadContext *tc, MVMSerializationRea
 
 /* Reading function for STable references. */
 MVMSTable * MVM_serialization_read_stable_ref(MVMThreadContext *tc, MVMSerializationReader *reader) {
+    /* Peek for the recipe sentinel before the normal decode. */
+    MVMint32 saved_offset = *(reader->cur_read_offset);
+    MVMuint32 packed = (MVMuint32)MVM_serialization_read_int(tc, reader);
+    MVMuint32 sc_id  = packed >> PACKED_SC_SHIFT;
+    if (sc_id == PACKED_SC_PARAM_INTERN) {
+        reader->eager_recipe_depth++;
+        MVMObject *parametric = read_obj_ref(tc, reader);
+        MVM_serialization_force_stable(tc, reader, STABLE(parametric));
+        MVMObject *parameters = NULL;
+        MVMSTable *result_st  = NULL;
+        MVMROOT(tc, parametric) {
+            parameters = read_array_var(tc, reader);
+            MVMROOT(tc, parameters) {
+                reader->eager_recipe_depth--;
+                int defer = reader->eager_recipe_depth == 0;
+                result_st = deser_parameterize_stable(tc, reader, parametric, parameters, defer);
+            }
+        }
+        return result_st;
+    }
+    *(reader->cur_read_offset) = saved_offset;
+
     MVMint32 idx;
     MVMSerializationContext *sc = read_locate_sc_and_index(tc, reader, &idx);
     return MVM_sc_get_stable(tc, sc, idx);
@@ -2252,6 +2742,31 @@ static MVMSTable *read_object_table_entry(MVMThreadContext *tc, MVMSerialization
         *concrete = packed & OBJECTS_TABLE_ENTRY_IS_CONCRETE;
 
     si = (packed >> OBJECTS_TABLE_ENTRY_SC_SHIFT) & OBJECTS_TABLE_ENTRY_SC_MASK;
+    if (si == OBJECTS_TABLE_ENTRY_SC_PARAM_INTERN) {
+        /* Recipe form. The pre-pass usually populates the cache; fall
+         * back to inline resolution otherwise. */
+        if (reader->obj_recipe_resolved && reader->obj_recipe_resolved[i])
+            return reader->obj_recipe_resolved[i];
+
+        MVMint32 recipe_start = read_int32(obj_table_row, 4);
+        char    **orig_buf_p  = reader->cur_read_buffer;
+        MVMint32 *orig_off_p  = reader->cur_read_offset;
+        char    **orig_end_p  = reader->cur_read_end;
+
+        MVMint32 local_offset = recipe_start + 4;
+        reader->cur_read_buffer = &(reader->root.objects_data);
+        reader->cur_read_offset = &local_offset;
+        reader->cur_read_end    = &(reader->objects_data_end);
+
+        MVMObject *param_obj = read_param_recipe(tc, reader, 0);
+        MVMSTable *result_st = STABLE(param_obj);
+
+        reader->cur_read_buffer = orig_buf_p;
+        reader->cur_read_offset = orig_off_p;
+        reader->cur_read_end    = orig_end_p;
+
+        return result_st;
+    }
     if (si == OBJECTS_TABLE_ENTRY_SC_OVERFLOW) {
         const char *const overflow_data
             = reader->root.objects_data + read_int32(obj_table_row, 4) - 8;
@@ -2416,6 +2931,19 @@ static void deserialize_closure(MVMThreadContext *tc, MVMSerializationReader *re
 
 /* Reads in what we need to lazily deserialize ->HOW later. */
 static void deserialize_how_lazy(MVMThreadContext *tc, MVMSTable *st, MVMSerializationReader *reader) {
+    /* Peek for the recipe sentinel. A recipe HOW resolves now and
+     * binds st->HOW directly; there is no (sc, idx) to stash for
+     * lazy resolution. */
+    MVMint32 saved_offset = *(reader->cur_read_offset);
+    MVMuint32 packed = (MVMuint32)MVM_serialization_read_int(tc, reader);
+    MVMuint32 sc_id_marker = packed >> PACKED_SC_SHIFT;
+    if (sc_id_marker == PACKED_SC_PARAM_INTERN) {
+        MVMObject *how_obj = read_param_recipe(tc, reader, 1);
+        MVM_ASSIGN_REF(tc, &(st->header), st->HOW, how_obj);
+        return;
+    }
+    *(reader->cur_read_offset) = saved_offset;
+
     MVMSerializationContext *sc = read_locate_sc_and_index(tc, reader, (MVMint32 *) &st->HOW_idx);
 
     MVM_ASSIGN_REF(tc, &(st->header), st->HOW_sc, sc);
@@ -2686,6 +3214,17 @@ static void deserialize_object(MVMThreadContext *tc, MVMSerializationReader *rea
         /* Delegate to its deserialization REPR function. */
         reader->current_object = obj;
         reader->objects_data_offset = read_int32(obj_table_row, 4);
+        /* Skip past the recipe prefix (4-byte length + body) when this
+         * entry is a recipe form. The REPR body starts after that. */
+        {
+            MVMuint32 packed_for_skip = read_int32(obj_table_row, 0);
+            MVMuint32 si_for_skip = (packed_for_skip >> OBJECTS_TABLE_ENTRY_SC_SHIFT) & OBJECTS_TABLE_ENTRY_SC_MASK;
+            if (si_for_skip == OBJECTS_TABLE_ENTRY_SC_PARAM_INTERN) {
+                MVMint32 recipe_len = read_int32(reader->root.objects_data,
+                    reader->objects_data_offset);
+                reader->objects_data_offset += 4 + recipe_len;
+            }
+        }
         if (REPR(obj)->deserialize)
             REPR(obj)->deserialize(tc, STABLE(obj), obj, OBJECT_BODY(obj), reader);
         else
@@ -3019,6 +3558,24 @@ static void repossess(MVMThreadContext *tc, MVMSerializationReader *reader, MVMi
  * For each parameterized type, if we already deserialized the parameterization
  * from a different compilation unit or created it in something we already
  * compiled, we will just use that existing parameterization. */
+/* Walks past one ref in the param_interns segment. The writer is
+ * required to emit refs here in plain (sc_id, idx) form, never as a
+ * PACKED_SC_PARAM_INTERN recipe, because this walk only computes
+ * offsets and does not implement recipe skipping. Any sentinel here is
+ * a wire format violation and aborts deserialization. */
+static void skip_param_intern_ref(MVMThreadContext *tc, MVMSerializationReader *reader) {
+    MVMint32 saved_offset = *(reader->cur_read_offset);
+    MVMuint32 packed = (MVMuint32)MVM_serialization_read_int(tc, reader);
+    if ((packed >> PACKED_SC_SHIFT) == PACKED_SC_PARAM_INTERN)
+        fail_deserialize(tc, NULL, reader,
+            "Wire format violation: PACKED_SC_PARAM_INTERN recipe encountered "
+            "in param_interns segment. Writer must emit plain (sc_id, idx) "
+            "refs here. See write_obj_ref's allow_recipe parameter.");
+    *(reader->cur_read_offset) = saved_offset;
+    MVMint32 idx;
+    read_locate_sc_and_index(tc, reader, &idx);
+}
+
 static void collect_param_interns(MVMThreadContext *tc, MVMSerializationReader *reader) {
     MVMint32 iidx;
 
@@ -3043,8 +3600,7 @@ static void collect_param_interns(MVMThreadContext *tc, MVMSerializationReader *
         MVMint32 offset = *(reader->cur_read_offset) + 1;
 
         /* Skip the parametric type object. */
-        MVMint32 idx;
-        read_locate_sc_and_index(tc, reader, &idx);
+        skip_param_intern_ref(tc, reader);
 
         /* Read indexes where type object and STable will get placed if a
          * matching intern is found. */
@@ -3063,10 +3619,8 @@ static void collect_param_interns(MVMThreadContext *tc, MVMSerializationReader *
         num_params = read_int32(*(reader->cur_read_buffer), *(reader->cur_read_offset));
         *(reader->cur_read_offset) += 4;
 
-        for (i = 0; i < num_params; i++) {
-            /* Skip the parameter object */
-            read_locate_sc_and_index(tc, reader, &idx);
-        }
+        for (i = 0; i < num_params; i++)
+            skip_param_intern_ref(tc, reader);
     }
 
     reader->param_interns_data_offset = orig_param_interns_data_offset;
@@ -3162,11 +3716,17 @@ void MVM_serialization_deserialize(MVMThreadContext *tc, MVMSerializationContext
      for (i = 0; i < reader->root.num_repos; i++)
         repossess(tc, reader, i, repo_conflicts, 0);
 
-    /* Enter the work loop to deal with the things we immediately need to
-     * handle in order to complete repossession object deserialization. */
+    /* working is set across the pre-pass so a recursive demand_object
+     * reached from the parameterizer just stubs and queues without
+     * driving a nested work_loop against partial state. The main
+     * work_loop below drains the queued stubs. */
     MVM_store(&reader->working, 1);
+    pre_resolve_object_table_recipes(tc, reader);
     work_loop(tc, reader);
     MVM_store(&reader->working, 0);
+
+    if (reader->num_deferred_recipes)
+        resolve_deferred_param_recipes(tc, reader);
 
     /* Clear serialized data reference in CU. */
     if ((*tc->interp_cu)->body.serialized) {

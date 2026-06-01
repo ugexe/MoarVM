@@ -48,6 +48,9 @@ MVMint64 MVM_6model_try_cache_type_check(MVMThreadContext *tc, MVMObject *obj,
 
 /* Clean up STable memory. */
 void MVM_6model_stable_gc_free(MVMThreadContext *tc, MVMSTable *st) {
+    if (st->extras_borrowed)
+        return;
+
     /* First have it free its repr_data if it wants. */
     if (st->REPR->gc_free_repr_data)
         st->REPR->gc_free_repr_data(tc, st);
