@@ -1476,6 +1476,58 @@ static void annotate_inline_start_end(MVMThreadContext *tc, MVMSpeshGraph *inlin
     return;
 }
 
+/* Resets the merged environment slots of the inlinee's clone-per-invocation
+ * lexicals (static environment flag 1) to NULL ahead of each entry into the
+ * inlined body, so every logical invocation vivifies its own clone of the
+ * prototype. The NULL is loaded from a spesh slot, since the null op
+ * produces VMNull rather than the C NULL the vivification check tests. */
+static void reset_cloned_lexicals(MVMThreadContext *tc, MVMSpeshGraph *inliner,
+        MVMStaticFrame *inlinee_sf, MVMuint16 lexicals_start,
+        MVMSpeshBB *runbytecode_bb, MVMSpeshIns *runbytecode_ins) {
+    MVMuint8 *flags = inlinee_sf->body.static_env_flags;
+    MVMuint32 num_lexicals = inlinee_sf->body.num_lexicals;
+    MVMuint32 i;
+    MVMSpeshOperand null_temp;
+    MVMSpeshIns *ss_ins;
+    MVMint32 any = 0;
+
+    if (!flags)
+        return;
+    for (i = 0; i < num_lexicals; i++) {
+        if (flags[i] == 1) {
+            any = 1;
+            break;
+        }
+    }
+    if (!any)
+        return;
+
+    null_temp = MVM_spesh_manipulate_get_temp_reg(tc, inliner, MVM_reg_obj);
+    ss_ins = MVM_spesh_alloc(tc, inliner, sizeof(MVMSpeshIns));
+    ss_ins->info = MVM_op_get_op(MVM_OP_sp_getspeshslot);
+    ss_ins->operands = MVM_spesh_alloc(tc, inliner, 2 * sizeof(MVMSpeshOperand));
+    ss_ins->operands[0] = null_temp;
+    ss_ins->operands[1].lit_i16 = MVM_spesh_add_spesh_slot_try_reuse(tc, inliner, NULL);
+    MVM_spesh_manipulate_insert_ins(tc, runbytecode_bb, runbytecode_ins->prev, ss_ins);
+    MVM_spesh_get_facts(tc, inliner, null_temp)->writer = ss_ins;
+
+    for (i = 0; i < num_lexicals; i++) {
+        MVMSpeshIns *bind_ins;
+        if (flags[i] != 1)
+            continue;
+        bind_ins = MVM_spesh_alloc(tc, inliner, sizeof(MVMSpeshIns));
+        bind_ins->info = MVM_op_get_op(MVM_OP_sp_bindlex_os);
+        bind_ins->operands = MVM_spesh_alloc(tc, inliner, 2 * sizeof(MVMSpeshOperand));
+        bind_ins->operands[0].lex.idx = lexicals_start + i;
+        bind_ins->operands[0].lex.outers = 0;
+        bind_ins->operands[1] = null_temp;
+        MVM_spesh_manipulate_insert_ins(tc, runbytecode_bb, runbytecode_ins->prev, bind_ins);
+        MVM_spesh_usages_add_by_reg(tc, inliner, null_temp, bind_ins);
+    }
+
+    MVM_spesh_manipulate_release_temp_reg(tc, inliner, null_temp);
+}
+
 /* Drives the overall inlining process. */
 void MVM_spesh_inline(MVMThreadContext *tc, MVMSpeshGraph *inliner,
         MVMCallsite *cs, MVMSpeshOperand *args, MVMSpeshBB *runbytecode_bb,
@@ -1519,6 +1571,12 @@ void MVM_spesh_inline(MVMThreadContext *tc, MVMSpeshGraph *inliner,
      * for the sake of deopt. */
     if (inliner->inlines[inliner->num_inlines - 1].may_cause_deopt)
         MVM_spesh_usages_retain_deopt_index(tc, inliner, return_deopt_idx(tc, runbytecode_ins));
+
+    /* Reset per-invocation cloned lexicals ahead of each entry into the
+     * inlined body. */
+    reset_cloned_lexicals(tc, inliner, inlinee_sf,
+        inliner->inlines[inliner->num_inlines - 1].lexicals_start,
+        runbytecode_bb, runbytecode_ins);
 
     /* Finally, turn the runbytecode instruction into a goto. */
     MVM_spesh_usages_delete_by_reg(tc, inliner,
