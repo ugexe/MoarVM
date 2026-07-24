@@ -798,27 +798,20 @@ void MVM_jit_emit_primitive(MVMThreadContext *tc, MVMJitCompiler *compiler, MVMJ
             | mov TMP3, [TMP2];
             | test TMP3, TMP3;
             | jnz >4;
-            /* vivify as clone */
+            /* Vivify via a helper that clones the prototype container and
+             * CAS-installs it, so threads racing on the first access agree
+             * on a single container. */
             | mov ARG1, TC;
-            | get_spesh_slot ARG2, spesh_idx;
-            | callp &MVM_repr_clone;
+            | mov ARG2, WORK[obj];
+            | mov ARG3, offset;
+            | get_spesh_slot ARG4, spesh_idx;
+            if (op == MVM_OP_sp_p6ogetvc_o) {
+                | callp &MVM_p6opaque_vivify_container;
+            }
+            else {
+                | callp &MVM_p6opaque_vivify_container_direct;
+            }
             | mov TMP3, RV;
-            /* reload object and address */
-            | mov TMP1, WORK[obj];
-            | lea TMP2, [TMP1 + (offset + body)];
-            | mov TMP4, P6OPAQUE:TMP1->body.replaced;
-            | lea TMP5, [TMP4 + offset];
-            | test TMP4, TMP4;
-            | cmovnz TMP2, TMP5;
-            /* assign with write barrier */
-            | check_wb TMP1, TMP3, >3;
-            | mov qword [rbp-0x28], TMP2; // address
-            | mov qword [rbp-0x30], TMP3; // value
-            | hit_wb WORK[obj], TMP3; // write barrier for header
-            | mov TMP3, qword [rbp-0x30];
-            | mov TMP2, qword [rbp-0x28];
-            |3:
-            | mov qword [TMP2], TMP3;
             /* done */
             |4:
         } else if (op == MVM_OP_sp_p6oget_bi) {

@@ -134,6 +134,10 @@ MVM_STATIC_INLINE MVMString * MVM_p6opaque_read_str(MVMThreadContext *tc,
     return *((MVMString **)(data + offset));
 }
 
+MVMObject * MVM_p6opaque_vivify_container(MVMThreadContext *tc, MVMObject *obj,
+    MVMuint16 offset, MVMObject *av_value);
+MVMObject * MVM_p6opaque_vivify_container_direct(MVMThreadContext *tc, MVMObject *obj,
+    MVMuint16 offset, MVMObject *av_value);
 size_t MVM_p6opaque_attr_offset(MVMThreadContext *tc, MVMObject *type,
     MVMObject *class_handle, MVMString *name);
 void MVM_p6opaque_attr_offset_and_arg_type(MVMThreadContext *tc, MVMObject *type,

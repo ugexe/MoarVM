@@ -250,6 +250,42 @@ MVM_NO_RETURN static void invalid_access_kind(MVMThreadContext *tc, const char *
     MVM_exception_throw_adhoc_free(tc, waste, "P6opaque: invalid %s attribute '%s' in type %s for kind %s", action, c_name, MVM_6model_get_debug_name(tc, class_handle), kind_desc);
 }
 
+/* Auto-vivifies a containerized attribute whose slot is still NULL. Clones
+ * the prototype container, then installs the clone with a CAS on the slot,
+ * so threads racing on the first access agree on a single container; the
+ * losing thread discards its clone and uses the winner's. */
+MVMObject * MVM_p6opaque_vivify_container(MVMThreadContext *tc, MVMObject *obj,
+        MVMuint16 offset, MVMObject *av_value) {
+    MVMObject *cloned;
+    MVMObject **slot;
+    MVMROOT(tc, obj) {
+        cloned = MVM_repr_clone(tc, av_value);
+    }
+    slot = (MVMObject **)((char *)MVM_p6opaque_real_data(tc, OBJECT_BODY(obj)) + offset);
+    if (MVM_trycas(slot, NULL, cloned)) {
+        MVM_gc_write_barrier(tc, &(obj->header), &(cloned->header));
+        return cloned;
+    }
+    return *slot;
+}
+
+/* As above, but the offset is relative to the start of the object; spesh
+ * uses this addressing for types that can never have a replaced body. */
+MVMObject * MVM_p6opaque_vivify_container_direct(MVMThreadContext *tc, MVMObject *obj,
+        MVMuint16 offset, MVMObject *av_value) {
+    MVMObject *cloned;
+    MVMObject **slot;
+    MVMROOT(tc, obj) {
+        cloned = MVM_repr_clone(tc, av_value);
+    }
+    slot = (MVMObject **)((char *)obj + offset);
+    if (MVM_trycas(slot, NULL, cloned)) {
+        MVM_gc_write_barrier(tc, &(obj->header), &(cloned->header));
+        return cloned;
+    }
+    return *slot;
+}
+
 /* Gets the current value for an attribute. */
 static void get_attribute(MVMThreadContext *tc, MVMSTable *st, MVMObject *root,
         void *data, MVMObject *class_handle, MVMString *name, MVMint64 hint,
@@ -320,20 +356,8 @@ static void get_attribute(MVMThreadContext *tc, MVMSTable *st, MVMObject *root,
                         MVMObject *value = repr_data->auto_viv_values[slot];
                         if (value != NULL) {
                             if (IS_CONCRETE(value)) {
-                                MVMROOT2(tc, value, root) {
-                                    MVMObject *cloned = REPR(value)->allocate(tc, STABLE(value));
-                                    /* Ordering here matters. We write the object into the
-                                    * register before calling copy_to. This is because
-                                    * if copy_to allocates, obj may have moved after
-                                    * we called it. This saves us having to put things on
-                                    * the temporary stack. The GC will know to update it
-                                    * in the register if it moved. */
-                                    result_reg->o = cloned;
-                                    REPR(value)->copy_to(tc, STABLE(value), OBJECT_BODY(value),
-                                        cloned, OBJECT_BODY(cloned));
-                                    set_obj_at_offset(tc, root, MVM_p6opaque_real_data(tc, OBJECT_BODY(root)),
-                                        repr_data->attribute_offsets[slot], result_reg->o);
-                                }
+                                result_reg->o = MVM_p6opaque_vivify_container(tc, root,
+                                    repr_data->attribute_offsets[slot], value);
                             }
                             else {
                                 set_obj_at_offset(tc, root, data, repr_data->attribute_offsets[slot], value);

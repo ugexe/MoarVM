@@ -6166,13 +6166,9 @@ void MVM_interp_run(MVMThreadContext *tc, void (*initial_invoke)(MVMThreadContex
                 MVMObject *o     = GET_REG(cur_op, 2).o;
                 char      *data  = MVM_p6opaque_real_data(tc, OBJECT_BODY(o));
                 MVMObject *val   = *((MVMObject **)(data + GET_UI16(cur_op, 4)));
-                if (!val) {
-                    /* Clone might allocate, so re-fetch things after it. */
-                    val  = MVM_repr_clone(tc, (MVMObject *)tc->cur_frame->effective_spesh_slots[GET_UI16(cur_op, 6)]);
-                    o    = GET_REG(cur_op, 2).o;
-                    data = MVM_p6opaque_real_data(tc, OBJECT_BODY(o));
-                    MVM_ASSIGN_REF(tc, &(o->header), *((MVMObject **)(data + GET_UI16(cur_op, 4))), val);
-                }
+                if (!val)
+                    val = MVM_p6opaque_vivify_container(tc, o, GET_UI16(cur_op, 4),
+                        (MVMObject *)tc->cur_frame->effective_spesh_slots[GET_UI16(cur_op, 6)]);
                 GET_REG(cur_op, 0).o = val;
                 cur_op += 8;
                 goto NEXT;
@@ -6296,14 +6292,9 @@ void MVM_interp_run(MVMThreadContext *tc, void (*initial_invoke)(MVMThreadContex
                 MVMObject *o     = GET_REG(cur_op, 2).o;
                 char      *data  = (char *)o;
                 MVMObject *val   = *((MVMObject **)(data + GET_UI16(cur_op, 4)));
-                if (!val) {
-                    /* Clone might allocate, so re-fetch things after it. */
-                    val  = MVM_repr_clone(tc,
-                            (MVMObject *)tc->cur_frame->effective_spesh_slots[GET_UI16(cur_op, 6)]);
-                    o    = GET_REG(cur_op, 2).o;
-                    data = (char *)o;
-                    MVM_ASSIGN_REF(tc, &(o->header), *((MVMObject **)(data + GET_UI16(cur_op, 4))), val);
-                }
+                if (!val)
+                    val = MVM_p6opaque_vivify_container_direct(tc, o, GET_UI16(cur_op, 4),
+                        (MVMObject *)tc->cur_frame->effective_spesh_slots[GET_UI16(cur_op, 6)]);
                 GET_REG(cur_op, 0).o = val;
                 cur_op += 8;
                 goto NEXT;
